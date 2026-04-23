@@ -1,0 +1,6 @@
+# Web scraping (URL 자동 요약)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Gemini AI
+google-generativeai>=0.8.0
