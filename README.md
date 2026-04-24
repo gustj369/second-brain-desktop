@@ -6,6 +6,7 @@
 ![Tkinter](https://img.shields.io/badge/GUI-Tkinter-FF6B35?style=flat)
 ![Gemini](https://img.shields.io/badge/AI-Gemini_API-4285F4?style=flat&logo=google&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat)
+![Version](https://img.shields.io/badge/version-v8.0-blueviolet?style=flat)
 
 <!-- screenshot here -->
 
@@ -17,6 +18,10 @@
 - 💥 아이디어 충돌기 — 전혀 다른 노트 2개를 AI가 창의적으로 연결
 - ☀️ 일일 브리핑 팝업 · 🔁 망각 방지 복습 알림
 - 🏷 태그 클라우드 · 📊 노트/링크 통계 · 💾 백업 기능
+- 📱 Threads 초안 생성 · 📋 클립보드 자동 캡처 · 🖥️ 시스템 트레이 상주
+- 🎬 유튜브 자막 요약 (youtube-transcript-api + Gemini)
+- 🕸️ 지식 그래프 — 공통 태그로 노트 연결 · 노드 클릭 시 바로 열기
+- 📈 관심사 트래킹 — 월별 태그 빈도 차트 · 🟩 GitHub 스타일 생산성 히트맵
 
 ## 🛠 설치 방법
 
@@ -52,8 +57,8 @@ second-brain-desktop/
 - [x] **Phase 4** — 전체 검색 · 태그 클라우드 · 통계 · 백업
 - [x] **Phase 5** — 일일 브리핑 · 망각 방지 복습 알림 시스템
 - [x] **Phase 6** — 아이디어 충돌기 · 나에게 묻기 (내 노트 기반 Q&A)
-- [ ] **Phase 7** — Markdown 렌더링 · 노트 내보내기 (PDF / .md)
-- [ ] **Phase 8** — 노트 간 수동 연결 · 관계 그래프 시각화
+- [x] **Phase 7** — Threads 초안 생성 · 클립보드 캡처 · 시스템 트레이 · 유튜브 자막 요약
+- [x] **Phase 8** — 지식 그래프 시각화 · 관심사 트래킹 · 생산성 히트맵
 
 ## 💡 만든 이유
 

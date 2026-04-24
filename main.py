@@ -1,8 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json, uuid, os, threading, re, shutil, random
-from datetime import datetime, date
-from collections import Counter
+import json, uuid, os, threading, re, shutil, random, time
+from datetime import datetime, date, timedelta
+from collections import Counter, defaultdict
 
 DATA_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.json")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -62,7 +62,6 @@ class ApiKeyDialog(tk.Toplevel):
         self.configure(bg=BG)
         self.resizable(False, False)
         self.transient(parent)
-
         tk.Label(self, text="🔑 Gemini API 키 입력",
                  bg=BG, fg=ACCENT, font=("Segoe UI", 13, "bold")).pack(pady=(24, 4))
         tk.Label(self, text="aistudio.google.com 에서 발급받은 키를 입력하세요.",
@@ -98,12 +97,10 @@ class BriefingDialog(tk.Toplevel):
         self.resizable(False, True)
         self.transient(parent)
         self._parent = parent
-
         tk.Label(self, text="☀️ 오늘의 브리핑", bg=BG, fg=ACCENT,
                  font=("Segoe UI", 14, "bold")).pack(pady=(22, 4))
         tk.Label(self, text="오늘 다시 생각해볼 노트 3개 — AI가 질문을 준비했어요",
                  bg=BG, fg=TEXT_DIM, font=("Segoe UI", 9)).pack()
-
         text_frame = tk.Frame(self, bg=BG3)
         text_frame.pack(fill="both", expand=True, padx=20, pady=14)
         self.result_box = tk.Text(text_frame, bg=BG3, fg=TEXT,
@@ -115,11 +112,9 @@ class BriefingDialog(tk.Toplevel):
         vsb.pack(side="right", fill="y")
         self.result_box.insert("1.0", "AI가 질문을 만드는 중입니다...\n잠시 기다려주세요 ☕")
         self.result_box.configure(state="disabled")
-
         tk.Button(self, text="오늘 브리핑 닫기", bg=ACCENT, fg="#000",
                   font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2",
                   command=self.destroy).pack(pady=(0, 18), ipadx=24, ipady=8)
-
         self.grab_set()
         threading.Thread(target=lambda: self._fetch(notes), daemon=True).start()
 
@@ -136,8 +131,7 @@ class BriefingDialog(tk.Toplevel):
             )
             response = model.generate_content(
                 f"다음 노트 {len(notes)}개를 읽고, 각각에 대해 오늘 다시 생각해볼 질문 1개씩을 한국어로 만들어줘.\n\n"
-                f"형식을 정확히 지켜줘:\n[노트 1] 제목\n질문: (질문 내용)\n\n[노트 2] ...\n\n"
-                f"노트 목록:\n{notes_text}"
+                f"형식: [노트 1] 제목\n질문: (내용)\n\n노트 목록:\n{notes_text}"
             )
             result = response.text
         except Exception as e:
@@ -159,19 +153,16 @@ class IdeaColliderDialog(tk.Toplevel):
         self._note_a = note_a
         self._note_b = note_b
         self._result_text = ""
-
         self.title("💥 아이디어 충돌기")
         self.geometry("640x560")
         self.configure(bg=BG)
         self.resizable(False, True)
         self.transient(parent)
-
         tk.Label(self, text="💥 아이디어 충돌기", bg=BG, fg=ACCENT,
                  font=("Segoe UI", 14, "bold")).pack(pady=(20, 2))
         if not no_overlap:
             tk.Label(self, text="⚠️ 태그가 겹치지 않는 노트를 찾지 못해 임의로 선택했습니다.",
                      bg=BG, fg="#f48771", font=("Segoe UI", 8)).pack()
-
         notes_frame = tk.Frame(self, bg=BG3)
         notes_frame.pack(fill="x", padx=20, pady=10)
         tk.Label(notes_frame, text=f"📝  {note_a['title']}", bg=BG3, fg=TEXT,
@@ -180,7 +171,6 @@ class IdeaColliderDialog(tk.Toplevel):
                  font=("Segoe UI", 9)).pack()
         tk.Label(notes_frame, text=f"📝  {note_b['title']}", bg=BG3, fg=TEXT,
                  font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=14, pady=(2, 10))
-
         text_frame = tk.Frame(self, bg=BG3)
         text_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
         self.result_box = tk.Text(text_frame, bg=BG3, fg=TEXT,
@@ -192,7 +182,6 @@ class IdeaColliderDialog(tk.Toplevel):
         vsb.pack(side="right", fill="y")
         self.result_box.insert("1.0", "AI가 창의적인 아이디어를 만드는 중입니다... ⚡")
         self.result_box.configure(state="disabled")
-
         btn_row = tk.Frame(self, bg=BG)
         btn_row.pack(pady=(0, 18))
         tk.Button(btn_row, text="닫기", bg=BG3, fg=TEXT_DIM,
@@ -204,7 +193,6 @@ class IdeaColliderDialog(tk.Toplevel):
                                    cursor="hand2", state="disabled",
                                    command=self._save_idea)
         self.save_btn.pack(side="left", ipadx=14, ipady=6)
-
         self.grab_set()
         threading.Thread(target=self._fetch, daemon=True).start()
 
@@ -250,26 +238,507 @@ class IdeaColliderDialog(tk.Toplevel):
         self._parent_app.content_box.insert("1.0", self._result_text)
         self.destroy()
 
+# ── Threads 초안 다이얼로그 ───────────────────────────
+class ThreadsDraftDialog(tk.Toplevel):
+    def __init__(self, parent, title, content):
+        super().__init__(parent)
+        self._parent = parent
+        self._result_text = ""
+        self.title("📱 Threads 초안")
+        self.geometry("580x520")
+        self.configure(bg=BG)
+        self.resizable(False, True)
+        self.transient(parent)
+        tk.Label(self, text="📱 Threads 초안", bg=BG, fg=ACCENT,
+                 font=("Segoe UI", 13, "bold")).pack(pady=(20, 4))
+        tk.Label(self, text="드라마틱 라이프 스타일로 생성된 포스트 초안",
+                 bg=BG, fg=TEXT_DIM, font=("Segoe UI", 8)).pack()
+        text_frame = tk.Frame(self, bg=BG3)
+        text_frame.pack(fill="both", expand=True, padx=20, pady=12)
+        self.result_box = tk.Text(text_frame, bg=BG3, fg=TEXT,
+                                   font=("Segoe UI", 11), relief="flat", bd=0,
+                                   wrap="word", padx=14, pady=12)
+        vsb = ttk.Scrollbar(text_frame, command=self.result_box.yview)
+        self.result_box.configure(yscrollcommand=vsb.set)
+        self.result_box.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.result_box.insert("1.0", "초안을 생성하는 중입니다... ✍️")
+        self.result_box.configure(state="disabled")
+        btn_row = tk.Frame(self, bg=BG)
+        btn_row.pack(pady=(0, 16))
+        tk.Button(btn_row, text="닫기", bg=BG3, fg=TEXT_DIM,
+                  font=("Segoe UI", 10), relief="flat", cursor="hand2",
+                  command=self.destroy).pack(side="left", ipadx=14, ipady=6, padx=(0, 8))
+        self.copy_btn = tk.Button(btn_row, text="📋 클립보드에 복사",
+                                   bg=ACCENT, fg="#000",
+                                   font=("Segoe UI", 10, "bold"), relief="flat",
+                                   cursor="hand2", state="disabled",
+                                   command=self._copy)
+        self.copy_btn.pack(side="left", ipadx=14, ipady=6)
+        self.grab_set()
+        threading.Thread(target=lambda: self._fetch(title, content), daemon=True).start()
+
+    def _fetch(self, title, content):
+        try:
+            import google.generativeai as genai
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash",
+                system_instruction=(
+                    "당신은 '드라마틱 라이프'라는 직장인 대상 Threads 계정 운영자입니다. "
+                    "반드시 한국어로 답변하세요."
+                )
+            )
+            note_content = f"제목: {title}\n\n{content[:1500]}"
+            response = model.generate_content(
+                "아래 노트를 바탕으로 Threads 포스트 초안을 작성해주세요.\n\n"
+                "스타일 규칙:\n"
+                "- 첫 줄은 멈춰서 읽게 만드는 후킹 문장\n"
+                "- 말투: ~었어요, ~이에요, ~더라고요 (편안한 구어체)\n"
+                "- ~합니다 체 절대 금지\n"
+                "- 결론에서 교훈 강요 금지\n"
+                "- 개인 경험을 자연스럽게 녹일 것\n"
+                "- 3~5문단, 각 문단 2~3줄\n"
+                "- 마지막 줄: 질문이나 여운을 남기는 문장\n\n"
+                f"[노트 내용]\n{note_content}"
+            )
+            self._result_text = response.text
+        except Exception as e:
+            self._result_text = f"오류: {str(e)}"
+        self._parent.after(0, lambda: self._update(self._result_text))
+
+    def _update(self, text):
+        if not self.winfo_exists(): return
+        self.result_box.configure(state="normal")
+        self.result_box.delete("1.0", "end")
+        self.result_box.insert("1.0", text)
+        self.result_box.configure(state="disabled")
+        if not text.startswith("오류:"):
+            self.copy_btn.configure(state="normal")
+
+    def _copy(self):
+        try:
+            import pyperclip
+            pyperclip.copy(self._result_text)
+        except ImportError:
+            self.clipboard_clear()
+            self.clipboard_append(self._result_text)
+        self.copy_btn.configure(text="✓ 복사됨!")
+        if self.winfo_exists():
+            self.after(2000, lambda: self.copy_btn.configure(
+                text="📋 클립보드에 복사") if self.winfo_exists() else None)
+
+# ── 지식 그래프 창 ────────────────────────────────────
+class KnowledgeGraphWindow(tk.Toplevel):
+    def __init__(self, parent_app, notes):
+        super().__init__(parent_app)
+        self._app = parent_app
+        self._fig = None
+        self.title("🕸️ 지식 그래프")
+        self.geometry("980x740")
+        self.configure(bg=BG)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 헤더
+        hdr = tk.Frame(self, bg=BG2, height=44)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="🕸️ 지식 그래프", bg=BG2, fg=ACCENT,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=16, pady=12)
+        tk.Label(hdr,
+                 text=f"노트 {len(notes)}개  ·  공통 태그로 연결  ·  노드 클릭 → 노트 열기",
+                 bg=BG2, fg=TEXT_DIM, font=("Segoe UI", 8)).pack(side="left", padx=4)
+
+        if len(notes) < 50:
+            tk.Label(self,
+                     text=f"💡 노트가 더 쌓이면 그래프가 풍성해져요 (현재 {len(notes)}개)",
+                     bg=BG, fg=TEXT_DIM, font=("Segoe UI", 9)).pack(pady=(8, 0))
+
+        try:
+            self._build_graph(notes)
+        except ImportError:
+            tk.Label(self,
+                     text="pip install networkx matplotlib\n을 실행한 뒤 앱을 재시작하세요.",
+                     bg=BG, fg="#f48771", font=("Segoe UI", 12),
+                     justify="center").pack(expand=True)
+
+    def _build_graph(self, notes):
+        import networkx as nx
+        import matplotlib
+        if matplotlib.get_backend().lower() != "tkagg":
+            matplotlib.use("TkAgg")
+        matplotlib.rcParams["font.family"] = ["Malgun Gothic", "sans-serif"]
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        # 그래프 구성
+        G = nx.Graph()
+        for note in notes:
+            G.add_node(note["id"], title=note["title"])
+
+        for i, n1 in enumerate(notes):
+            for n2 in notes[i+1:]:
+                common = len(set(n1["tags"]) & set(n2["tags"]))
+                if common:
+                    G.add_edge(n1["id"], n2["id"], weight=common)
+
+        # 고립 노드 제거 (노트 많을 때)
+        if len(notes) > 60:
+            isolates = list(nx.isolates(G))
+            G.remove_nodes_from(isolates)
+
+        if len(G.nodes()) == 0:
+            tk.Label(self,
+                     text="공통 태그로 연결된 노트가 없어요.\n태그를 더 활용해보세요!",
+                     bg=BG, fg=TEXT_DIM, font=("Segoe UI", 12),
+                     justify="center").pack(expand=True)
+            return
+
+        # 레이아웃
+        try:
+            pos = nx.kamada_kawai_layout(G)
+        except Exception:
+            pos = nx.spring_layout(G, k=1.8, seed=42, iterations=60)
+
+        # Figure
+        fig = Figure(figsize=(11, 8.2), facecolor="#1e1e1e")
+        ax = fig.add_subplot(111)
+        ax.set_facecolor("#252526")
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        # 엣지 그리기 (굵기 = 공통 태그 수)
+        if G.edges():
+            weights = [G[u][v].get("weight", 1) for u, v in G.edges()]
+            max_w = max(weights)
+            edge_widths = [0.6 + (w / max_w) * 4.0 for w in weights]
+            nx.draw_networkx_edges(G, pos, ax=ax, width=edge_widths,
+                                   edge_color="#4fc3f7", alpha=0.30)
+
+        # 노드 크기 = 연결 수 기반
+        degrees = dict(G.degree())
+        node_sizes = [180 + degrees[n] * 90 for n in G.nodes()]
+        nx.draw_networkx_nodes(G, pos, ax=ax,
+                               node_color="#4fc3f7", node_size=node_sizes,
+                               alpha=0.88, linewidths=0)
+
+        # 라벨 (15자 초과 시 말줄임)
+        id_to_note = {n["id"]: n for n in notes}
+        labels = {}
+        for nid in G.nodes():
+            t = id_to_note[nid]["title"] if nid in id_to_note else ""
+            labels[nid] = (t[:13] + "…") if len(t) > 13 else t
+        nx.draw_networkx_labels(G, pos, labels, ax=ax,
+                                font_size=7, font_color="#d4d4d4")
+
+        # 캔버스 임베드
+        canvas = FigureCanvasTkAgg(fig, master=self)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+        self._fig = fig
+        self._pos = pos
+        self._id_to_note = id_to_note
+
+        # 클릭 이벤트 — 가장 가까운 노드 선택
+        def on_click(event):
+            if event.inaxes != ax or event.xdata is None:
+                return
+            cx, cy = event.xdata, event.ydata
+            xlim = ax.get_xlim()
+            threshold = (xlim[1] - xlim[0]) * 0.06
+
+            nearest_id, min_dist = None, float("inf")
+            for nid, (nx_, ny_) in pos.items():
+                d = ((cx - nx_)**2 + (cy - ny_)**2)**0.5
+                if d < min_dist:
+                    min_dist, nearest_id = d, nid
+
+            if nearest_id and min_dist < threshold * 3 and nearest_id in id_to_note:
+                def go():
+                    self._app.select_note(nearest_id)
+                    if self._app.state() == "withdrawn":
+                        self._app.deiconify()
+                    self._app.lift()
+                    self._app.focus_force()
+                self._app.after(0, go)
+
+        fig.canvas.mpl_connect("button_press_event", on_click)
+
+    def _on_close(self):
+        if self._fig:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close(self._fig)
+            except Exception:
+                pass
+        self.destroy()
+
+# ── 관심사 & 히트맵 창 ───────────────────────────────
+class InterestWindow(tk.Toplevel):
+    def __init__(self, parent_app, notes):
+        super().__init__(parent_app)
+        self._fig1 = None
+        self._fig2 = None
+        self.title("📈 내 관심사 & 생산성")
+        self.geometry("960x860")
+        self.configure(bg=BG)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        hdr = tk.Frame(self, bg=BG2, height=44)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="📈 내 관심사 & 생산성 히트맵", bg=BG2, fg=ACCENT,
+                 font=("Segoe UI", 12, "bold")).pack(side="left", padx=16, pady=12)
+
+        try:
+            self._build(notes)
+        except ImportError:
+            tk.Label(self,
+                     text="pip install matplotlib\n을 실행한 뒤 앱을 재시작하세요.",
+                     bg=BG, fg="#f48771", font=("Segoe UI", 12),
+                     justify="center").pack(expand=True)
+
+    def _build(self, notes):
+        import matplotlib
+        if matplotlib.get_backend().lower() != "tkagg":
+            matplotlib.use("TkAgg")
+        matplotlib.rcParams["font.family"] = ["Malgun Gothic", "sans-serif"]
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.patches import Rectangle
+
+        today = date.today()
+
+        # ── 월별 태그 집계 ────────────────────────────
+        month_tag_counts = defaultdict(lambda: defaultdict(int))
+        all_tag_counts = Counter()
+
+        for note in notes:
+            try:
+                dt = datetime.fromisoformat(note["created_at"])
+                ym = dt.strftime("%Y-%m")
+            except Exception:
+                continue
+            for tag in note["tags"]:
+                month_tag_counts[ym][tag] += 1
+                all_tag_counts[tag] += 1
+
+        top_tags = [t for t, _ in all_tag_counts.most_common(10)]
+
+        # 최근 12개월 목록
+        months = []
+        cur = today.replace(day=1)
+        for _ in range(12):
+            months.append(cur.strftime("%Y-%m"))
+            if cur.month == 1:
+                cur = cur.replace(year=cur.year - 1, month=12)
+            else:
+                cur = cur.replace(month=cur.month - 1)
+        months.reverse()
+
+        # 이번 달 최다 태그
+        this_month = today.strftime("%Y-%m")
+        this_counts = month_tag_counts.get(this_month, {})
+        top_now = max(this_counts, key=this_counts.get) if this_counts else "없음"
+
+        # 안내 레이블
+        info = tk.Frame(self, bg=BG2)
+        info.pack(fill="x")
+        tk.Label(info,
+                 text=f"  이번 달 가장 많이 생각한 주제 → #{top_now}",
+                 bg=BG2, fg=ACCENT, font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=16, pady=8)
+
+        # ── 누적 막대 차트 ────────────────────────────
+        COLORS = [
+            "#4fc3f7","#81c784","#ffb74d","#f06292","#ba68c8",
+            "#4db6ac","#ffd54f","#ff8a65","#90a4ae","#a5d6a7",
+        ]
+        month_labels = [f"{int(m[5:])}월" for m in months]
+
+        fig1 = Figure(figsize=(10.5, 3.8), facecolor="#1e1e1e")
+        ax1 = fig1.add_subplot(111)
+        ax1.set_facecolor("#252526")
+        ax1.tick_params(colors="#858585", labelsize=8)
+        for sp in ax1.spines.values():
+            sp.set_color("#3c3c3c")
+
+        if top_tags and months:
+            bottom = [0] * len(months)
+            for i, tag in enumerate(top_tags):
+                vals = [month_tag_counts[m].get(tag, 0) for m in months]
+                ax1.bar(month_labels, vals, bottom=bottom,
+                        label=f"#{tag}", color=COLORS[i % len(COLORS)],
+                        alpha=0.87, width=0.68)
+                bottom = [b + v for b, v in zip(bottom, vals)]
+            ax1.set_title("월별 태그 사용 빈도 (상위 10개)",
+                          color="#d4d4d4", fontsize=10, pad=8)
+            ax1.set_ylabel("노트 수", color="#858585", fontsize=8)
+            ax1.tick_params(axis="x", rotation=40, labelsize=8)
+            ax1.legend(loc="upper left", fontsize=7, framealpha=0.3,
+                       facecolor="#2d2d2d", edgecolor="#3c3c3c",
+                       labelcolor="#d4d4d4", ncol=5)
+        else:
+            ax1.text(0.5, 0.5, "태그가 있는 노트를 더 작성해보세요!",
+                     transform=ax1.transAxes, ha="center", va="center",
+                     color="#858585", fontsize=12)
+
+        c1 = FigureCanvasTkAgg(fig1, master=self)
+        c1.draw()
+        c1.get_tk_widget().pack(fill="x", padx=8, pady=(4, 0))
+        self._fig1 = fig1
+
+        # ── 히트맵 통계 바 ────────────────────────────
+        day_counts = defaultdict(int)
+        for note in notes:
+            try:
+                d = datetime.fromisoformat(note["created_at"]).date()
+                day_counts[d] += 1
+            except Exception:
+                pass
+
+        if day_counts:
+            best_day   = max(day_counts, key=day_counts.get)
+            best_count = day_counts[best_day]
+            # 최장 연속 기록
+            max_streak = cur_streak = 0
+            for i in range(365):
+                d = today - timedelta(days=i)
+                if day_counts.get(d, 0) > 0:
+                    cur_streak += 1
+                    max_streak  = max(max_streak, cur_streak)
+                else:
+                    cur_streak = 0
+        else:
+            best_day = today; best_count = 0; max_streak = 0
+
+        stat_bar = tk.Frame(self, bg=BG3)
+        stat_bar.pack(fill="x", padx=8, pady=(10, 2))
+        tk.Label(stat_bar, text="📊 생산성 히트맵 (최근 1년)",
+                 bg=BG3, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(
+            side="left", padx=12, pady=6)
+        tk.Label(stat_bar,
+                 text=f"🏆 최다 작성일: {best_day.strftime('%m/%d')} ({best_count}개)   "
+                      f"⚡ 최장 연속: {max_streak}일",
+                 bg=BG3, fg=TEXT_DIM, font=("Segoe UI", 8)).pack(
+            side="right", padx=12, pady=6)
+
+        # ── GitHub 잔디 히트맵 ────────────────────────
+        # 52주 전 월요일부터 오늘까지
+        cur_monday = today - timedelta(days=today.weekday())
+        start_date = cur_monday - timedelta(weeks=52)
+
+        # weeks × days 데이터
+        weeks_data = []
+        week_dates = []
+        d = start_date
+        while d <= today + timedelta(days=6 - today.weekday()):
+            week = []
+            wdates = []
+            for _ in range(7):
+                week.append(day_counts.get(d, 0))
+                wdates.append(d)
+                d += timedelta(days=1)
+            weeks_data.append(week)
+            week_dates.append(wdates)
+
+        max_c = max((max(w) for w in weeks_data), default=1) or 1
+
+        def _heat_color(count):
+            if count == 0:
+                return "#2d2d2d"
+            t = min(count / max_c, 1.0)
+            r = int(0x0d + t * (0x4f - 0x0d))
+            g = int(0x3a + t * (0xc3 - 0x3a))
+            b = int(0x4f + t * (0xf7 - 0x4f))
+            return f"#{r:02x}{g:02x}{b:02x}"
+
+        NUM_WEEKS = len(weeks_data)
+        CELL = 0.84
+        GAP  = 0.16
+        STEP = CELL + GAP
+
+        fig2 = Figure(figsize=(10.5, 2.4), facecolor="#1e1e1e")
+        ax2 = fig2.add_subplot(111)
+        ax2.set_facecolor("#1e1e1e")
+        ax2.set_xticks([]); ax2.set_yticks([])
+        for sp in ax2.spines.values():
+            sp.set_visible(False)
+
+        # 셀 그리기
+        for wi, week in enumerate(weeks_data):
+            for di, count in enumerate(week):
+                x = wi * STEP
+                y = (6 - di) * STEP   # di=0(월) → y 최상단
+                rect = Rectangle((x, y), CELL, CELL,
+                                  color=_heat_color(count), linewidth=0)
+                ax2.add_patch(rect)
+
+        total_w = NUM_WEEKS * STEP
+        total_h = 7 * STEP
+        ax2.set_xlim(-1.2, total_w + 0.2)
+        ax2.set_ylim(-0.4, total_h + 1.0)
+
+        # 요일 레이블
+        for di, name in enumerate(["월","화","수","목","금","토","일"]):
+            y = (6 - di) * STEP + CELL / 2
+            ax2.text(-0.15, y, name, color="#858585", fontsize=6.5,
+                     va="center", ha="right")
+
+        # 월 레이블
+        prev_month = None
+        for wi, wdates in enumerate(week_dates):
+            m = wdates[0].month
+            if m != prev_month:
+                ax2.text(wi * STEP, total_h + 0.2,
+                         f"{m}월", color="#858585", fontsize=7,
+                         va="bottom", ha="left")
+                prev_month = m
+
+        c2 = FigureCanvasTkAgg(fig2, master=self)
+        c2.draw()
+        c2.get_tk_widget().pack(fill="x", padx=8, pady=(0, 10))
+        self._fig2 = fig2
+
+    def _on_close(self):
+        try:
+            import matplotlib.pyplot as plt
+            if self._fig1: plt.close(self._fig1)
+            if self._fig2: plt.close(self._fig2)
+        except Exception:
+            pass
+        self.destroy()
+
 # ── 앱 ───────────────────────────────────────────────
 class BrainApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("세컨 브레인")
-        self.geometry("1200x800")
-        self.minsize(1200, 800)
+        self.geometry("1200x820")
+        self.minsize(1200, 820)
         self.configure(bg=BG)
 
+        config = load_config()
         self.data = load_data()
         self.selected_id = None
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh_list())
         self.note_type = tk.StringVar(value="note")
         self.api_client = None
+        self.clipboard_enabled = tk.BooleanVar(value=config.get("clipboard_enabled", True))
+        self._last_clipboard = ""
+        self._active_toast = None
+        self._monitor_running = True
+        self.tray_icon = None
 
         self._build_ui()
         self._init_api()
         self.refresh_list()
         self.after(600, self._run_briefing)
+        self._start_tray()
+        self._start_clipboard_monitor()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── API ──────────────────────────────────────────
     def _init_api(self):
@@ -303,6 +772,136 @@ class BrainApp(tk.Tk):
             if self.api_client:
                 messagebox.showinfo("완료", "API 키가 업데이트되었습니다.")
 
+    # ── 지식 그래프 ───────────────────────────────────
+    def _show_graph(self):
+        KnowledgeGraphWindow(self, self.data["notes"])
+
+    # ── 관심사 & 히트맵 ──────────────────────────────
+    def _show_interests(self):
+        InterestWindow(self, self.data["notes"])
+
+    # ── 시스템 트레이 ─────────────────────────────────
+    def _start_tray(self):
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+
+            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            draw.ellipse([0, 0, 63, 63], fill=(30, 30, 30, 255))
+            draw.ellipse([10, 10, 54, 54], fill=(79, 195, 247, 255))
+
+            menu = pystray.Menu(
+                pystray.MenuItem("세컨 브레인 열기", self._show_window),
+                pystray.MenuItem(
+                    "클립보드 캡처",
+                    lambda icon, item: self.after(0, self._toggle_clipboard_setting),
+                    checked=lambda item: self.clipboard_enabled.get()
+                ),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("종료", self._quit_app),
+            )
+            self.tray_icon = pystray.Icon("SecondBrain", img, "🧠 세컨 브레인", menu)
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except ImportError:
+            pass
+
+    def _show_window(self, icon=None, item=None):
+        self.after(0, lambda: (self.deiconify(), self.lift(), self.focus_force()))
+
+    def _on_close(self):
+        if self.tray_icon:
+            self.withdraw()
+        else:
+            self._quit_app()
+
+    def _quit_app(self, icon=None, item=None):
+        self._monitor_running = False
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.after(0, self.destroy)
+
+    # ── 클립보드 캡처 ─────────────────────────────────
+    def _toggle_clipboard_setting(self):
+        val = not self.clipboard_enabled.get()
+        self.clipboard_enabled.set(val)
+        config = load_config()
+        config["clipboard_enabled"] = val
+        save_config(config)
+        if val:
+            self.clipboard_toggle_btn.configure(
+                text="📋 캡처 ON", bg="#1b3a2a", fg="#81c784")
+        else:
+            self.clipboard_toggle_btn.configure(
+                text="📋 캡처 OFF", bg=BG3, fg=TEXT_DIM)
+
+    def _start_clipboard_monitor(self):
+        try:
+            import pyperclip
+        except ImportError:
+            return
+
+        def monitor():
+            while self._monitor_running:
+                try:
+                    current = pyperclip.paste()
+                    if current != self._last_clipboard:
+                        if self.clipboard_enabled.get() and len(current.strip()) >= 50:
+                            self.after(0, lambda t=current: self._show_clipboard_toast(t))
+                        self._last_clipboard = current
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        threading.Thread(target=monitor, daemon=True).start()
+
+    def _show_clipboard_toast(self, text):
+        if self._active_toast:
+            try:
+                if self._active_toast.winfo_exists():
+                    return
+            except Exception:
+                pass
+
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+
+        toast = tk.Toplevel()
+        toast.geometry(f"360x95+{sw - 376}+{sh - 130}")
+        toast.configure(bg=BG2)
+        toast.attributes("-topmost", True)
+        toast.overrideredirect(True)
+        self._active_toast = toast
+
+        preview = text[:42] + "..." if len(text) > 42 else text
+        tk.Label(toast, text="📋 클립보드에 복사됨 — 노트로 저장할까요?",
+                 bg=BG2, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", padx=14, pady=(10, 2))
+        tk.Label(toast, text=f'"{preview}"', bg=BG2, fg=TEXT_DIM,
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=14)
+
+        btn_row = tk.Frame(toast, bg=BG2)
+        btn_row.pack(anchor="e", padx=14, pady=6)
+        tk.Button(btn_row, text="무시", bg=BG3, fg=TEXT_DIM,
+                  font=("Segoe UI", 8), relief="flat", cursor="hand2",
+                  command=toast.destroy).pack(side="left", padx=(0, 6), ipadx=8, ipady=3)
+        tk.Button(btn_row, text="저장", bg=ACCENT, fg="#000",
+                  font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
+                  command=lambda: self._save_from_clipboard(text, toast)
+                  ).pack(side="left", ipadx=8, ipady=3)
+
+        toast.after(8000, lambda: toast.destroy() if toast.winfo_exists() else None)
+
+    def _save_from_clipboard(self, text, toast):
+        toast.destroy()
+        self._show_window()
+        self.after(100, lambda: (
+            self.new_note(),
+            self.content_box.delete("1.0", "end"),
+            self.content_box.insert("1.0", text),
+            self.status_label.configure(text="클립보드에서 가져옴")
+        ))
+
     # ── 일일 브리핑 ──────────────────────────────────
     def _run_briefing(self):
         if not self.api_client or len(self.data["notes"]) < 10:
@@ -333,25 +932,29 @@ class BrainApp(tk.Tk):
         a, b = random.sample(notes, 2)
         return a, b, False
 
+    # ── Threads 초안 ──────────────────────────────────
+    def _threads_draft(self):
+        if not self._check_api(): return
+        title   = self.title_var.get().strip()
+        content = self.content_box.get("1.0", "end").strip()
+        if not title and not content:
+            messagebox.showwarning("알림", "노트 내용을 먼저 입력하세요."); return
+        ThreadsDraftDialog(self, title, content)
+
     # ── 나에게 묻기 ───────────────────────────────────
     def _ask_brain(self):
         if not self._check_api(): return
         question = self.ask_var.get().strip()
         if not question:
             messagebox.showwarning("알림", "질문을 입력하세요."); return
-
         self.ask_btn.configure(text="생각 중...", state="disabled")
         self.status_label.configure(text="나에게 묻는 중...")
-
         notes = self.data["notes"]
         truncated = len(notes) > 200
         notes_to_send = sorted(notes, key=lambda n: n["updated_at"], reverse=True)[:200]
         notice = "※ 최근 200개 노트 기준으로 답변합니다.\n\n" if truncated else ""
-
         notes_context = "\n".join(
-            f"- [{n['title']}]: {n['content'][:200]}"
-            for n in notes_to_send
-        )
+            f"- [{n['title']}]: {n['content'][:200]}" for n in notes_to_send)
         q = question
 
         def worker():
@@ -363,14 +966,13 @@ class BrainApp(tk.Tk):
                         "당신은 아래 노트들을 작성한 사람입니다. "
                         "이 사람의 사고방식과 관심사를 바탕으로 질문에 답해주세요. "
                         "없는 내용은 지어내지 말고 '관련 노트가 없습니다'라고 답하세요. "
-                        "답변 마지막에 근거로 사용한 노트 제목을 '📎 참고 노트:' 항목으로 나열해주세요. "
+                        "답변 마지막에 '📎 참고 노트:' 항목으로 근거 노트 제목을 나열해주세요. "
                         "반드시 한국어로 답변하세요."
                     )
                 )
-                prompt = f"[노트 목록]\n{notes_context}\n\n[질문]\n{q}"
-                response = model.generate_content(prompt)
-                result = notice + response.text
-                self.after(0, lambda: self._done_ask(result))
+                response = model.generate_content(
+                    f"[노트 목록]\n{notes_context}\n\n[질문]\n{q}")
+                self.after(0, lambda: self._done_ask(notice + response.text))
             except Exception as e:
                 self.after(0, lambda: self._done_ask_error(str(e)))
 
@@ -386,6 +988,81 @@ class BrainApp(tk.Tk):
         self.ask_btn.configure(text="질문하기", state="normal")
         self._ai_error(err)
 
+    # ── 유튜브 자막 요약 ──────────────────────────────
+    def _is_youtube_url(self, url):
+        return "youtube.com/watch" in url or "youtu.be/" in url
+
+    def _extract_youtube_id(self, url):
+        patterns = [
+            r"youtu\.be/([a-zA-Z0-9_-]{11})",
+            r"youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
+            r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, url)
+            if m:
+                return m.group(1)
+        return None
+
+    def _on_url_change(self, *args):
+        if self.note_type.get() == "link":
+            url = self.url_var.get()
+            if self._is_youtube_url(url):
+                if not self.youtube_btn.winfo_ismapped():
+                    self.youtube_btn.pack(side="left", padx=(6, 0), ipadx=8, ipady=5)
+            else:
+                self.youtube_btn.pack_forget()
+
+    def _youtube_summary(self):
+        if not self._check_api(): return
+        url = self.url_var.get().strip()
+        vid = self._extract_youtube_id(url)
+        if not vid:
+            messagebox.showerror("오류", "YouTube 영상 ID를 찾을 수 없습니다."); return
+
+        self.youtube_btn.configure(text="자막 추출 중...", state="disabled")
+        self.status_label.configure(text="YouTube 자막 추출 중...")
+
+        def worker():
+            try:
+                from youtube_transcript_api import YouTubeTranscriptApi
+                try:
+                    segments = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
+                except Exception:
+                    segments = YouTubeTranscriptApi.get_transcript(vid)
+                transcript = " ".join(s["text"] for s in segments)[:5000]
+
+                import google.generativeai as genai
+                model = genai.GenerativeModel(
+                    "gemini-2.5-flash",
+                    system_instruction=(
+                        "당신은 유튜브 영상 내용을 분석하는 전문가입니다. "
+                        "반드시 한국어로 답변하세요."
+                    )
+                )
+                response = model.generate_content(
+                    "다음 유튜브 영상 자막을 읽고 핵심 내용을 한국어로 요약해줘.\n"
+                    "형식: 핵심 주제 1줄 + 주요 포인트 5개 (각 1~2줄)\n\n"
+                    f"자막:\n{transcript}"
+                )
+                self.after(0, lambda: self._done_youtube(response.text))
+            except Exception as e:
+                self.after(0, lambda: self._youtube_error(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _done_youtube(self, text):
+        self.youtube_btn.configure(text="📺 자막 요약", state="normal")
+        self.status_label.configure(text="자막 요약 완료 ✓")
+        self.content_box.delete("1.0", "end")
+        self.content_box.insert("1.0", text)
+
+    def _youtube_error(self, err):
+        self.youtube_btn.configure(text="📺 자막 요약", state="normal")
+        self.status_label.configure(text="자막 추출 실패")
+        messagebox.showerror("오류",
+            f"자막 추출 실패:\n{err}\n\n자막이 없거나 비공개 영상일 수 있어요.")
+
     # ── 망각 방지 복습 ────────────────────────────────
     def _days_since_review(self, note):
         ref = note.get("reviewed_at") or note.get("created_at", "")
@@ -393,7 +1070,7 @@ class BrainApp(tk.Tk):
             return 0
         try:
             return (date.today() - datetime.fromisoformat(ref).date()).days
-        except:
+        except Exception:
             return 0
 
     def _mark_reviewed(self):
@@ -420,15 +1097,37 @@ class BrainApp(tk.Tk):
                                      font=("Segoe UI", 9))
         self.stats_label.pack(side="left", padx=(4, 0), pady=10)
 
+        # 우측 버튼들 (오른쪽 → 왼쪽 순으로 pack)
         tk.Button(header, text="API 키 설정", bg=BG3, fg=TEXT_DIM,
                   font=("Segoe UI", 8), relief="flat",
-                  command=self._reset_api_key).pack(side="right", padx=(8, 16), pady=13, ipadx=8, ipady=2)
+                  command=self._reset_api_key).pack(
+            side="right", padx=(8, 16), pady=13, ipadx=8, ipady=2)
         tk.Button(header, text="💾 백업", bg=BG3, fg=TEXT_DIM,
                   font=("Segoe UI", 8), relief="flat",
                   command=self._backup).pack(side="right", pady=13, ipadx=8, ipady=2)
         tk.Button(header, text="💥 아이디어 충돌", bg="#2a1b2a", fg="#ce93d8",
                   font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
-                  command=self._idea_collider).pack(side="right", padx=(0, 8), pady=13, ipadx=10, ipady=2)
+                  command=self._idea_collider).pack(
+            side="right", padx=(0, 8), pady=13, ipadx=10, ipady=2)
+
+        clip_bg  = "#1b3a2a" if self.clipboard_enabled.get() else BG3
+        clip_fg  = "#81c784" if self.clipboard_enabled.get() else TEXT_DIM
+        clip_txt = "📋 캡처 ON" if self.clipboard_enabled.get() else "📋 캡처 OFF"
+        self.clipboard_toggle_btn = tk.Button(
+            header, text=clip_txt, bg=clip_bg, fg=clip_fg,
+            font=("Segoe UI", 8), relief="flat", cursor="hand2",
+            command=self._toggle_clipboard_setting)
+        self.clipboard_toggle_btn.pack(side="right", padx=(0, 8), pady=13, ipadx=8, ipady=2)
+
+        # ★ 신규: 관심사 & 그래프 버튼
+        tk.Button(header, text="📈 관심사", bg="#1a2030", fg="#ffb74d",
+                  font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
+                  command=self._show_interests).pack(
+            side="right", padx=(0, 8), pady=13, ipadx=10, ipady=2)
+        tk.Button(header, text="🕸️ 지식 그래프", bg="#1a1530", fg="#ba68c8",
+                  font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
+                  command=self._show_graph).pack(
+            side="right", padx=(0, 8), pady=13, ipadx=10, ipady=2)
 
         main = tk.Frame(self, bg=BG)
         main.pack(fill="both", expand=True)
@@ -447,8 +1146,8 @@ class BrainApp(tk.Tk):
     def _build_left(self, parent):
         search_frame = tk.Frame(parent, bg=BG2)
         search_frame.pack(fill="x", padx=12, pady=(12, 6))
-        tk.Label(search_frame, text="전체 검색  (제목 · 본문 · 태그)", bg=BG2, fg=TEXT_DIM,
-                 font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Label(search_frame, text="전체 검색  (제목 · 본문 · 태그)",
+                 bg=BG2, fg=TEXT_DIM, font=("Segoe UI", 9)).pack(anchor="w")
         tk.Entry(search_frame, textvariable=self.search_var,
                  bg=BG3, fg=TEXT, insertbackground=TEXT,
                  relief="flat", font=("Segoe UI", 10), bd=6
@@ -461,7 +1160,6 @@ class BrainApp(tk.Tk):
 
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x")
 
-        # 태그 클라우드 (하단 고정)
         cloud_outer = tk.Frame(parent, bg=BG2)
         cloud_outer.pack(fill="x", side="bottom")
         tk.Frame(cloud_outer, bg=BORDER, height=1).pack(fill="x")
@@ -507,6 +1205,7 @@ class BrainApp(tk.Tk):
         url_input_row = tk.Frame(self.url_row, bg=BG)
         url_input_row.pack(fill="x")
         self.url_var = tk.StringVar()
+        self.url_var.trace_add("write", self._on_url_change)
         tk.Entry(url_input_row, textvariable=self.url_var,
                  bg=BG3, fg=TEXT, insertbackground=TEXT,
                  font=("Segoe UI", 10), relief="flat", bd=8
@@ -517,6 +1216,11 @@ class BrainApp(tk.Tk):
                                    activebackground="#455a64", cursor="hand2",
                                    command=self._fetch_summary)
         self.fetch_btn.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        self.youtube_btn = tk.Button(url_input_row, text="📺 자막 요약",
+                                     bg="#1a1a2e", fg="#ff6b6b",
+                                     font=("Segoe UI", 9, "bold"), relief="flat",
+                                     activebackground="#2a1a3e", cursor="hand2",
+                                     command=self._youtube_summary)
 
         # 제목
         tk.Label(parent, text="제목", bg=BG, fg=TEXT_DIM,
@@ -577,7 +1281,12 @@ class BrainApp(tk.Tk):
                                      font=("Segoe UI", 9, "bold"), relief="flat",
                                      activebackground="#2a3a4a", cursor="hand2",
                                      command=self._find_similar)
-        self.similar_btn.pack(side="left", ipadx=10, ipady=5)
+        self.similar_btn.pack(side="left", ipadx=10, ipady=5, padx=(0, 8))
+        tk.Button(ai_row, text="📱 Threads 초안",
+                  bg="#1a1030", fg="#a78bfa",
+                  font=("Segoe UI", 9, "bold"), relief="flat",
+                  activebackground="#2a2040", cursor="hand2",
+                  command=self._threads_draft).pack(side="left", ipadx=10, ipady=5)
 
         # AI 결과 영역
         self.ai_result_frame = tk.Frame(parent, bg=BG3)
@@ -600,7 +1309,7 @@ class BrainApp(tk.Tk):
         self.ai_result_box.pack(side="left", fill="both", expand=True)
         ai_vsb.pack(side="right", fill="y")
 
-        # 저장/삭제 버튼
+        # 저장/삭제
         self.btn_row = tk.Frame(parent, bg=BG)
         self.btn_row.pack(fill="x", padx=24, pady=(8, 4))
         self.status_label = tk.Label(self.btn_row, text="", bg=BG, fg=TEXT_DIM,
@@ -616,7 +1325,7 @@ class BrainApp(tk.Tk):
                   command=self.save_note).pack(side="right", ipadx=14, ipady=6)
 
         # 나에게 묻기
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=0)
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x")
         ask_outer = tk.Frame(parent, bg=BG2)
         ask_outer.pack(fill="x")
         ask_inner = tk.Frame(ask_outer, bg=BG2)
@@ -628,8 +1337,7 @@ class BrainApp(tk.Tk):
         self.ask_var = tk.StringVar()
         self.ask_entry = tk.Entry(ask_row, textvariable=self.ask_var,
                                    bg=BG3, fg=TEXT, insertbackground=TEXT,
-                                   font=("Segoe UI", 10), relief="flat", bd=8,
-                                   width=40)
+                                   font=("Segoe UI", 10), relief="flat", bd=8)
         self.ask_entry.pack(side="left", fill="x", expand=True, ipady=5)
         self.ask_entry.bind("<Return>", lambda e: self._ask_brain())
         self.ask_btn = tk.Button(ask_row, text="질문하기", bg="#2a2a3a", fg=ACCENT,
@@ -656,9 +1364,11 @@ class BrainApp(tk.Tk):
         if self.note_type.get() == "link":
             self.url_row.pack(fill="x", padx=24, pady=(0, 0),
                                before=self.right_parent.winfo_children()[2])
+            self._on_url_change()
         else:
             self.url_row.pack_forget()
             self.url_var.set("")
+            self.youtube_btn.pack_forget()
 
     # ── URL 요약 ──────────────────────────────────────
     def _fetch_summary(self):
@@ -802,12 +1512,11 @@ class BrainApp(tk.Tk):
     def _done_similar(self, text, note_ids):
         self.similar_btn.configure(text="🔍 비슷한 노트 찾기", state="normal")
         self.status_label.configure(text="분석 완료 ✓")
-        hint = "\n\n💡 파란색으로 표시된 [ID:...] 부분을 클릭하면 해당 노트로 이동합니다." if note_ids else ""
-        display = text + hint
+        hint = "\n\n💡 파란색 [ID:...] 부분을 클릭하면 해당 노트로 이동합니다." if note_ids else ""
         self.ai_result_title.configure(text="🔍 비슷한 노트")
         self.ai_result_box.configure(state="normal")
         self.ai_result_box.delete("1.0", "end")
-        self.ai_result_box.insert("1.0", display)
+        self.ai_result_box.insert("1.0", text + hint)
         for i, note_id in enumerate(note_ids):
             tag = f"link_{i}"
             short_id = note_id[:8]
@@ -843,8 +1552,8 @@ class BrainApp(tk.Tk):
     def _update_stats(self):
         total = len(self.data["notes"])
         links = sum(1 for n in self.data["notes"] if n.get("type") == "link")
-        review_due = sum(1 for n in self.data["notes"] if self._days_since_review(n) >= 7)
-        review_text = f"  🔁 복습 {review_due}개" if review_due else ""
+        due   = sum(1 for n in self.data["notes"] if self._days_since_review(n) >= 7)
+        review_text = f"  🔁 복습 {due}개" if due else ""
         self.stats_label.configure(
             text=f"📝 노트 {total - links}개  🔗 링크 {links}개{review_text}")
 
@@ -909,7 +1618,8 @@ class BrainApp(tk.Tk):
                  font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x")
         if note["tags"]:
             tk.Label(inner, text="  ".join(f"#{t}" for t in note["tags"]),
-                     bg=bg, fg=ACCENT, font=("Segoe UI", 8), anchor="w").pack(fill="x", pady=(2, 0))
+                     bg=bg, fg=ACCENT, font=("Segoe UI", 8), anchor="w").pack(
+                fill="x", pady=(2, 0))
         tk.Label(inner, text=note["updated_at"][:10], bg=bg, fg=TEXT_DIM,
                  font=("Segoe UI", 8), anchor="w").pack(fill="x", pady=(2, 0))
 
@@ -955,8 +1665,9 @@ class BrainApp(tk.Tk):
 
         days = self._days_since_review(note)
         if days >= 7:
-            msg = f"🔁 마지막으로 본 지 {days}일 됐어요{'  — 오래된 노트예요!' if days >= 90 else ''}"
-            self.review_bar_label.configure(text=msg)
+            suffix = "  — 오래된 노트예요!" if days >= 90 else ""
+            self.review_bar_label.configure(
+                text=f"🔁 마지막으로 본 지 {days}일 됐어요{suffix}")
             self.review_bar.pack(fill="x", padx=24, pady=(6, 0),
                                   before=self.content_label)
         else:
