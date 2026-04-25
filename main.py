@@ -16,20 +16,60 @@ TEXT_DIM = "#858585"
 BORDER   = "#3c3c3c"
 SEL      = "#094771"
 
+_NOTE_DEFAULTS = {
+    "title": "", "content": "", "tags": [], "type": "note",
+    "url": "", "reviewed_at": None, "review_count": 0,
+}
+
+def _normalize_note(note):
+    """오래된·손상된 노트 필드를 안전하게 보정."""
+    for k, v in _NOTE_DEFAULTS.items():
+        if k not in note:
+            note[k] = v
+    if not isinstance(note.get("tags"), list):
+        note["tags"] = []
+    for ts in ("created_at", "updated_at"):
+        if ts not in note or not note[ts]:
+            note[ts] = datetime.now().isoformat(timespec="seconds")
+    return note
+
 def load_data():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            raw["notes"] = [_normalize_note(n) for n in raw.get("notes", [])]
+            return raw
+        except (json.JSONDecodeError, Exception) as e:
+            # 손상된 파일 백업 후 빈 데이터로 시작
+            backup = DATA_FILE + ".corrupt." + datetime.now().strftime("%Y%m%d%H%M%S")
+            try:
+                shutil.copy2(DATA_FILE, backup)
+            except Exception:
+                pass
+            import tkinter.messagebox as _mb
+            _mb.showerror(
+                "데이터 파일 오류",
+                f"brain.json을 읽을 수 없습니다.\n\n"
+                f"손상된 파일을 백업했습니다:\n{backup}\n\n"
+                f"새 데이터로 시작합니다."
+            )
     return {"notes": []}
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+    """임시 파일 저장 후 원자적 교체 — 저장 중 앱 종료 시 데이터 손상 방지."""
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, DATA_FILE)
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception):
+            return {}
     return {}
 
 def save_config(config):
@@ -727,6 +767,7 @@ class BrainApp(tk.Tk):
         self.note_type = tk.StringVar(value="note")
         self.api_client = None
         self.clipboard_enabled = tk.BooleanVar(value=config.get("clipboard_enabled", True))
+        self._clipboard_active = config.get("clipboard_enabled", True)   # 스레드 안전 bool
         self._last_clipboard = ""
         self._active_toast = None
         self._monitor_running = True
@@ -825,6 +866,7 @@ class BrainApp(tk.Tk):
     def _toggle_clipboard_setting(self):
         val = not self.clipboard_enabled.get()
         self.clipboard_enabled.set(val)
+        self._clipboard_active = val          # 백그라운드 스레드용 plain bool 동기화
         config = load_config()
         config["clipboard_enabled"] = val
         save_config(config)
@@ -846,7 +888,8 @@ class BrainApp(tk.Tk):
                 try:
                     current = pyperclip.paste()
                     if current != self._last_clipboard:
-                        if self.clipboard_enabled.get() and len(current.strip()) >= 50:
+                        # Tkinter 변수 대신 plain bool 사용 — 백그라운드 스레드 안전
+                        if self._clipboard_active and len(current.strip()) >= 50:
                             self.after(0, lambda t=current: self._show_clipboard_toast(t))
                         self._last_clipboard = current
                 except Exception:
@@ -1380,8 +1423,11 @@ class BrainApp(tk.Tk):
             self.url_var.set(url)
         self.fetch_btn.configure(text="가져오는 중...", state="disabled")
         self.status_label.configure(text="페이지 읽는 중...")
-        threading.Thread(target=lambda: self.after(0,
-            lambda: self._apply_summary(*fetch_url_summary(url))), daemon=True).start()
+        # fetch_url_summary()는 네트워크 요청 — 반드시 백그라운드 스레드에서 실행
+        def worker():
+            result = fetch_url_summary(url)
+            self.after(0, lambda: self._apply_summary(*result))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _apply_summary(self, title, body, err):
         self.fetch_btn.configure(text="요약 가져오기", state="normal")
