@@ -1,11 +1,19 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json, uuid, os, threading, re, shutil, random, time
+import json, uuid, os, threading, re, shutil, random, time, logging
+from logging.handlers import RotatingFileHandler
+from typing import Optional
 from datetime import datetime, date, timedelta
 from collections import Counter, defaultdict
 
-DATA_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.json")
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+DATA_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.json")
+CONFIG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+GEMINI_MODEL = "gemini-2.5-flash"
+LOG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.log")
+_log_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")
+_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(funcName)s: %(message)s"))
+logging.getLogger().addHandler(_log_handler)
+logging.getLogger().setLevel(logging.ERROR)
 
 BG       = "#1e1e1e"
 BG2      = "#252526"
@@ -15,6 +23,9 @@ TEXT     = "#d4d4d4"
 TEXT_DIM = "#858585"
 BORDER   = "#3c3c3c"
 SEL      = "#094771"
+
+TOAST_TIMEOUT_MS  = 8000
+CLIPBOARD_MIN_LEN = 50
 
 _NOTE_DEFAULTS = {
     "title": "", "content": "", "tags": [], "type": "note",
@@ -33,20 +44,21 @@ def _normalize_note(note):
             note[ts] = datetime.now().isoformat(timespec="seconds")
     return note
 
-def load_data():
+def load_data() -> dict:
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             raw["notes"] = [_normalize_note(n) for n in raw.get("notes", [])]
             return raw
-        except (json.JSONDecodeError, Exception) as e:
+        except Exception as e:
+            logging.error(e, exc_info=True)
             # 손상된 파일 백업 후 빈 데이터로 시작
             backup = DATA_FILE + ".corrupt." + datetime.now().strftime("%Y%m%d%H%M%S")
             try:
                 shutil.copy2(DATA_FILE, backup)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(e, exc_info=True)
             import tkinter.messagebox as _mb
             _mb.showerror(
                 "데이터 파일 오류",
@@ -56,27 +68,28 @@ def load_data():
             )
     return {"notes": []}
 
-def save_data(data):
+def save_data(data: dict) -> None:
     """임시 파일 저장 후 원자적 교체 — 저장 중 앱 종료 시 데이터 손상 방지."""
     tmp = DATA_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, DATA_FILE)
 
-def load_config():
+def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, Exception):
+        except Exception as e:
+            logging.error(e, exc_info=True)
             return {}
     return {}
 
-def save_config(config):
+def save_config(config: dict) -> None:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-def fetch_url_summary(url):
+def fetch_url_summary(url: str) -> tuple[str, str, Optional[str]]:
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -90,6 +103,7 @@ def fetch_url_summary(url):
         body_text = " ".join(soup.get_text(separator=" ").split())[:500]
         return title, body_text, None
     except Exception as e:
+        logging.error(e, exc_info=True)
         return "", "", str(e)
 
 # ── API 키 다이얼로그 ──────────────────────────────────
@@ -162,7 +176,7 @@ class BriefingDialog(tk.Toplevel):
         try:
             import google.generativeai as genai
             model = genai.GenerativeModel(
-                "gemini-2.5-flash",
+                GEMINI_MODEL,
                 system_instruction="당신은 지적 성장을 돕는 코치입니다. 반드시 한국어로 답변하세요."
             )
             notes_text = "\n\n".join(
@@ -175,6 +189,7 @@ class BriefingDialog(tk.Toplevel):
             )
             result = response.text
         except Exception as e:
+            logging.error(e, exc_info=True)
             result = f"AI 연결 오류: {str(e)}"
         self._parent.after(0, lambda: self._update(result))
 
@@ -240,7 +255,7 @@ class IdeaColliderDialog(tk.Toplevel):
         try:
             import google.generativeai as genai
             model = genai.GenerativeModel(
-                "gemini-2.5-flash",
+                GEMINI_MODEL,
                 system_instruction=(
                     "당신은 창의적인 아이디어 전문가입니다. "
                     "전혀 다른 두 개념을 연결하여 혁신적인 아이디어를 만들어냅니다. "
@@ -257,6 +272,7 @@ class IdeaColliderDialog(tk.Toplevel):
             response = model.generate_content(prompt)
             self._result_text = response.text
         except Exception as e:
+            logging.error(e, exc_info=True)
             self._result_text = f"오류: {str(e)}"
         self._parent_app.after(0, lambda: self._update(self._result_text))
 
@@ -322,7 +338,7 @@ class ThreadsDraftDialog(tk.Toplevel):
         try:
             import google.generativeai as genai
             model = genai.GenerativeModel(
-                "gemini-2.5-flash",
+                GEMINI_MODEL,
                 system_instruction=(
                     "당신은 '드라마틱 라이프'라는 직장인 대상 Threads 계정 운영자입니다. "
                     "반드시 한국어로 답변하세요."
@@ -343,6 +359,7 @@ class ThreadsDraftDialog(tk.Toplevel):
             )
             self._result_text = response.text
         except Exception as e:
+            logging.error(e, exc_info=True)
             self._result_text = f"오류: {str(e)}"
         self._parent.after(0, lambda: self._update(self._result_text))
 
@@ -436,7 +453,8 @@ class KnowledgeGraphWindow(tk.Toplevel):
         # 레이아웃
         try:
             pos = nx.kamada_kawai_layout(G)
-        except Exception:
+        except Exception as e:
+            logging.error(e, exc_info=True)
             pos = nx.spring_layout(G, k=1.8, seed=42, iterations=60)
 
         # Figure
@@ -510,8 +528,8 @@ class KnowledgeGraphWindow(tk.Toplevel):
             try:
                 import matplotlib.pyplot as plt
                 plt.close(self._fig)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(e, exc_info=True)
         self.destroy()
 
 # ── 관심사 & 히트맵 창 ───────────────────────────────
@@ -558,7 +576,8 @@ class InterestWindow(tk.Toplevel):
             try:
                 dt = datetime.fromisoformat(note["created_at"])
                 ym = dt.strftime("%Y-%m")
-            except Exception:
+            except Exception as e:
+                logging.error(e, exc_info=True)
                 continue
             for tag in note["tags"]:
                 month_tag_counts[ym][tag] += 1
@@ -635,8 +654,8 @@ class InterestWindow(tk.Toplevel):
             try:
                 d = datetime.fromisoformat(note["created_at"]).date()
                 day_counts[d] += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(e, exc_info=True)
 
         if day_counts:
             best_day   = max(day_counts, key=day_counts.get)
@@ -746,8 +765,8 @@ class InterestWindow(tk.Toplevel):
             import matplotlib.pyplot as plt
             if self._fig1: plt.close(self._fig1)
             if self._fig2: plt.close(self._fig2)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(e, exc_info=True)
         self.destroy()
 
 # ── 앱 ───────────────────────────────────────────────
@@ -889,11 +908,11 @@ class BrainApp(tk.Tk):
                     current = pyperclip.paste()
                     if current != self._last_clipboard:
                         # Tkinter 변수 대신 plain bool 사용 — 백그라운드 스레드 안전
-                        if self._clipboard_active and len(current.strip()) >= 50:
+                        if self._clipboard_active and len(current.strip()) >= CLIPBOARD_MIN_LEN:
                             self.after(0, lambda t=current: self._show_clipboard_toast(t))
                         self._last_clipboard = current
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.error(e, exc_info=True)
                 time.sleep(1)
 
         threading.Thread(target=monitor, daemon=True).start()
@@ -903,8 +922,8 @@ class BrainApp(tk.Tk):
             try:
                 if self._active_toast.winfo_exists():
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(e, exc_info=True)
 
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
@@ -933,13 +952,16 @@ class BrainApp(tk.Tk):
                   command=lambda: self._save_from_clipboard(text, toast)
                   ).pack(side="left", ipadx=8, ipady=3)
 
-        toast.after(8000, lambda: toast.destroy() if toast.winfo_exists() else None)
+        toast.after(TOAST_TIMEOUT_MS, lambda: toast.destroy() if toast.winfo_exists() else None)
 
     def _save_from_clipboard(self, text, toast):
         toast.destroy()
         self._show_window()
+        first_line = (text.strip().splitlines() or [""])[0]
+        auto_title = (first_line[:50].rsplit(" ", 1)[0] or first_line[:50]).strip()
         self.after(100, lambda: (
             self.new_note(),
+            self.title_var.set(auto_title),
             self.content_box.delete("1.0", "end"),
             self.content_box.insert("1.0", text),
             self.status_label.configure(text="클립보드에서 가져옴")
@@ -1004,7 +1026,7 @@ class BrainApp(tk.Tk):
             try:
                 import google.generativeai as genai
                 model = genai.GenerativeModel(
-                    "gemini-2.5-flash",
+                    GEMINI_MODEL,
                     system_instruction=(
                         "당신은 아래 노트들을 작성한 사람입니다. "
                         "이 사람의 사고방식과 관심사를 바탕으로 질문에 답해주세요. "
@@ -1017,6 +1039,7 @@ class BrainApp(tk.Tk):
                     f"[노트 목록]\n{notes_context}\n\n[질문]\n{q}")
                 self.after(0, lambda: self._done_ask(notice + response.text))
             except Exception as e:
+                logging.error(e, exc_info=True)
                 self.after(0, lambda: self._done_ask_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1077,7 +1100,7 @@ class BrainApp(tk.Tk):
 
                 import google.generativeai as genai
                 model = genai.GenerativeModel(
-                    "gemini-2.5-flash",
+                    GEMINI_MODEL,
                     system_instruction=(
                         "당신은 유튜브 영상 내용을 분석하는 전문가입니다. "
                         "반드시 한국어로 답변하세요."
@@ -1090,6 +1113,7 @@ class BrainApp(tk.Tk):
                 )
                 self.after(0, lambda: self._done_youtube(response.text))
             except Exception as e:
+                logging.error(e, exc_info=True)
                 self.after(0, lambda: self._youtube_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1113,7 +1137,8 @@ class BrainApp(tk.Tk):
             return 0
         try:
             return (date.today() - datetime.fromisoformat(ref).date()).days
-        except Exception:
+        except Exception as e:
+            logging.error(e, exc_info=True)
             return 0
 
     def _mark_reviewed(self):
@@ -1469,7 +1494,7 @@ class BrainApp(tk.Tk):
             try:
                 import google.generativeai as genai
                 model = genai.GenerativeModel(
-                    "gemini-2.5-flash",
+                    GEMINI_MODEL,
                     system_instruction=(
                         "당신은 지식 관리 전문가입니다. "
                         "사용자의 노트를 분석하여 주제적으로 연결될 수 있는 개념과 이유를 찾아주세요. "
@@ -1483,6 +1508,7 @@ class BrainApp(tk.Tk):
                 )
                 self.after(0, lambda: self._done_keywords(response.text))
             except Exception as e:
+                logging.error(e, exc_info=True)
                 self.after(0, lambda: self._ai_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1516,7 +1542,7 @@ class BrainApp(tk.Tk):
                 current_note = f"제목: {title}\n내용: {content[:500]}"
                 import google.generativeai as genai
                 model = genai.GenerativeModel(
-                    "gemini-2.5-flash",
+                    GEMINI_MODEL,
                     system_instruction=(
                         "당신은 지식 관리 전문가입니다. "
                         "노트들의 주제적 연관성을 분석합니다. "
@@ -1551,6 +1577,7 @@ class BrainApp(tk.Tk):
                             full_ids.append(n["id"]); break
                 self.after(0, lambda: self._done_similar(result_text, full_ids))
             except Exception as e:
+                logging.error(e, exc_info=True)
                 self.after(0, lambda: self._ai_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1730,8 +1757,8 @@ class BrainApp(tk.Tk):
         url     = self.url_var.get().strip() if ntype == "link" else ""
         now     = datetime.now().isoformat(timespec="seconds")
 
-        if not title and not content:
-            messagebox.showwarning("알림", "제목 또는 본문을 입력하세요."); return
+        if not title:
+            messagebox.showwarning("알림", "제목을 입력하세요."); return
 
         if self.selected_id:
             for note in self.data["notes"]:

@@ -6,7 +6,7 @@
 ![Tkinter](https://img.shields.io/badge/GUI-Tkinter-FF6B35?style=flat)
 ![Gemini](https://img.shields.io/badge/AI-Gemini_API-4285F4?style=flat&logo=google&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat)
-![Version](https://img.shields.io/badge/version-v8.0-blueviolet?style=flat)
+![Version](https://img.shields.io/badge/version-v8.2-blueviolet?style=flat)
 
 <!-- screenshot here -->
 
@@ -24,6 +24,8 @@
 - 📈 관심사 트래킹 — 월별 태그 빈도 차트 · 🟩 GitHub 스타일 생산성 히트맵
 
 ## 🛠 설치 방법
+
+**요구사항**: Python 3.9+ (tested on 3.14.2), Windows
 
 ```bash
 # 1. 저장소 클론
@@ -44,8 +46,12 @@ python main.py
 ```
 second-brain-desktop/
 ├── main.py              # 앱 본체
-├── requirements.txt
+├── requirements.txt     # 운영 의존성
+├── requirements-dev.txt # 개발 의존성 (pytest)
+├── tests/
+│   └── test_data.py     # 단위 테스트
 ├── brain.json           # 노트 데이터 (자동 생성, git 제외)
+├── brain.log            # 에러 로그 (자동 생성, git 제외)
 └── config.json          # API 키 (자동 생성, git 제외)
 ```
 

@@ -2,6 +2,11 @@
 config.json
 brain.json
 brain_backup_*.json
+brain.json.corrupt.*
+
+# ── 로그 ──
+brain.log
+brain.log.*
 
 # ── Python ──
 __pycache__/

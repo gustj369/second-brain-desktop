@@ -4,6 +4,15 @@
 
 ---
 
+## [v8.2] - 2026-05-15
+### Improved
+- 🔧 **AI 모델명 상수화**: `GEMINI_MODEL = "gemini-2.5-flash"` — 7곳 하드코딩 제거, 모델 변경 시 한 줄만 수정
+- 🔧 **파일 로깅 추가**: `RotatingFileHandler` (5 MB × 2개) → `brain.log` 기록, 모든 예외 블록에 스택트레이스 포함
+- 🔧 **예외 처리 정리**: `except (json.JSONDecodeError, Exception)` → `except Exception` 중복 제거, 기존 무시 블록 9곳 로깅 추가
+- 🛡️ **노트 제목 필수화**: 제목 없이 저장 불가 (기존: 제목·본문 모두 비어야 경고)
+- ✨ **클립보드 자동 제목**: 클립보드 저장 시 첫 줄(최대 50자, 단어 경계)을 제목으로 자동 채움
+- 🔧 **UI 타이밍·임계값 상수화**: `TOAST_TIMEOUT_MS = 8000`, `CLIPBOARD_MIN_LEN = 50`
+
 ## [v8.1] - 2026-04-25
 ### Fixed
 - 🛡️ **원자적 저장**: 임시 파일 → `os.replace()` 교체 방식으로 저장 중 데이터 손상 방지
