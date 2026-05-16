@@ -36,7 +36,7 @@ def _normalize_note(note):
     """오래된·손상된 노트 필드를 안전하게 보정."""
     for k, v in _NOTE_DEFAULTS.items():
         if k not in note:
-            note[k] = v
+            note[k] = v.copy() if isinstance(v, (list, dict)) else v
     if not isinstance(note.get("tags"), list):
         note["tags"] = []
     for ts in ("created_at", "updated_at"):
@@ -105,6 +105,19 @@ def fetch_url_summary(url: str) -> tuple[str, str, Optional[str]]:
     except Exception as e:
         logging.error(e, exc_info=True)
         return "", "", str(e)
+
+def _fetch_youtube_transcript(vid: str) -> str:
+    """YouTube 영상 ID로 자막을 가져와 텍스트로 반환한다.
+
+    한국어 → 영어 순으로 자막을 시도하고, 둘 다 없으면 첫 번째 가용 자막을 사용한다.
+    실패 시 예외를 그대로 올린다 (호출측에서 처리).
+    """
+    from youtube_transcript_api import YouTubeTranscriptApi
+    try:
+        segments = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
+    except Exception:
+        segments = YouTubeTranscriptApi.get_transcript(vid)
+    return " ".join(s["text"] for s in segments)[:5000]
 
 # ── API 키 다이얼로그 ──────────────────────────────────
 class ApiKeyDialog(tk.Toplevel):
@@ -928,7 +941,7 @@ class BrainApp(tk.Tk):
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
 
-        toast = tk.Toplevel()
+        toast = tk.Toplevel(self)
         toast.geometry(f"360x95+{sw - 376}+{sh - 130}")
         toast.configure(bg=BG2)
         toast.attributes("-topmost", True)
@@ -952,7 +965,13 @@ class BrainApp(tk.Tk):
                   command=lambda: self._save_from_clipboard(text, toast)
                   ).pack(side="left", ipadx=8, ipady=3)
 
-        toast.after(TOAST_TIMEOUT_MS, lambda: toast.destroy() if toast.winfo_exists() else None)
+        def _auto_close():
+            try:
+                if toast.winfo_exists():
+                    toast.destroy()
+            except tk.TclError:
+                pass
+        toast.after(TOAST_TIMEOUT_MS, _auto_close)
 
     def _save_from_clipboard(self, text, toast):
         toast.destroy()
@@ -1020,29 +1039,19 @@ class BrainApp(tk.Tk):
         notice = "※ 최근 200개 노트 기준으로 답변합니다.\n\n" if truncated else ""
         notes_context = "\n".join(
             f"- [{n['title']}]: {n['content'][:200]}" for n in notes_to_send)
-        q = question
 
-        def worker():
-            try:
-                import google.generativeai as genai
-                model = genai.GenerativeModel(
-                    GEMINI_MODEL,
-                    system_instruction=(
-                        "당신은 아래 노트들을 작성한 사람입니다. "
-                        "이 사람의 사고방식과 관심사를 바탕으로 질문에 답해주세요. "
-                        "없는 내용은 지어내지 말고 '관련 노트가 없습니다'라고 답하세요. "
-                        "답변 마지막에 '📎 참고 노트:' 항목으로 근거 노트 제목을 나열해주세요. "
-                        "반드시 한국어로 답변하세요."
-                    )
-                )
-                response = model.generate_content(
-                    f"[노트 목록]\n{notes_context}\n\n[질문]\n{q}")
-                self.after(0, lambda: self._done_ask(notice + response.text))
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                self.after(0, lambda: self._done_ask_error(str(e)))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._call_ai_async(
+            system_instruction=(
+                "당신은 아래 노트들을 작성한 사람입니다. "
+                "이 사람의 사고방식과 관심사를 바탕으로 질문에 답해주세요. "
+                "없는 내용은 지어내지 말고 '관련 노트가 없습니다'라고 답하세요. "
+                "답변 마지막에 '📎 참고 노트:' 항목으로 근거 노트 제목을 나열해주세요. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt=f"[노트 목록]\n{notes_context}\n\n[질문]\n{question}",
+            on_success=lambda text: self._done_ask(notice + text),
+            on_error=self._done_ask_error,
+        )
 
     def _done_ask(self, text):
         self.ask_btn.configure(text="질문하기", state="normal")
@@ -1091,12 +1100,7 @@ class BrainApp(tk.Tk):
 
         def worker():
             try:
-                from youtube_transcript_api import YouTubeTranscriptApi
-                try:
-                    segments = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
-                except Exception:
-                    segments = YouTubeTranscriptApi.get_transcript(vid)
-                transcript = " ".join(s["text"] for s in segments)[:5000]
+                transcript = _fetch_youtube_transcript(vid)
 
                 import google.generativeai as genai
                 model = genai.GenerativeModel(
@@ -1475,6 +1479,24 @@ class BrainApp(tk.Tk):
         btn.configure(text="분석 중...", state="disabled")
         self.status_label.configure(text="AI 분석 중...")
 
+    def _call_ai_async(self, system_instruction: str, prompt: str,
+                       on_success, on_error=None):
+        """공통: genai 모델 생성 → 백그라운드 스레드 → after(0, 콜백)."""
+        err_cb = on_error if on_error else self._ai_error
+
+        def worker():
+            try:
+                import google.generativeai as genai
+                model = genai.GenerativeModel(
+                    GEMINI_MODEL, system_instruction=system_instruction)
+                response = model.generate_content(prompt)
+                self.after(0, lambda: on_success(response.text))
+            except Exception as e:
+                logging.error(e, exc_info=True)
+                self.after(0, lambda err=str(e): err_cb(err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _ai_error(self, err):
         self.keywords_btn.configure(text="🔗 연결고리 찾기", state="normal")
         self.similar_btn.configure(text="🔍 비슷한 노트 찾기", state="normal")
@@ -1489,29 +1511,19 @@ class BrainApp(tk.Tk):
         if not title and not content:
             messagebox.showwarning("알림", "노트 내용을 먼저 입력하세요."); return
         self._ai_set_loading(self.keywords_btn, "분석 중...")
-
-        def worker():
-            try:
-                import google.generativeai as genai
-                model = genai.GenerativeModel(
-                    GEMINI_MODEL,
-                    system_instruction=(
-                        "당신은 지식 관리 전문가입니다. "
-                        "사용자의 노트를 분석하여 주제적으로 연결될 수 있는 개념과 이유를 찾아주세요. "
-                        "반드시 한국어로 답변하세요."
-                    )
-                )
-                note_text = f"제목: {title}\n\n본문: {content[:1000]}"
-                response = model.generate_content(
-                    f"다음 노트와 주제적으로 연결될 수 있는 키워드 5개와 "
-                    f"각각의 연결 이유를 한국어로 알려줘:\n\n{note_text}"
-                )
-                self.after(0, lambda: self._done_keywords(response.text))
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                self.after(0, lambda: self._ai_error(str(e)))
-
-        threading.Thread(target=worker, daemon=True).start()
+        note_text = f"제목: {title}\n\n본문: {content[:1000]}"
+        self._call_ai_async(
+            system_instruction=(
+                "당신은 지식 관리 전문가입니다. "
+                "사용자의 노트를 분석하여 주제적으로 연결될 수 있는 개념과 이유를 찾아주세요. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt=(
+                f"다음 노트와 주제적으로 연결될 수 있는 키워드 5개와 "
+                f"각각의 연결 이유를 한국어로 알려줘:\n\n{note_text}"
+            ),
+            on_success=self._done_keywords,
+        )
 
     def _done_keywords(self, text):
         self.keywords_btn.configure(text="🔗 연결고리 찾기", state="normal")
@@ -1528,28 +1540,33 @@ class BrainApp(tk.Tk):
         if not title and not content:
             messagebox.showwarning("알림", "노트 내용을 먼저 입력하세요."); return
         self._ai_set_loading(self.similar_btn, "분석 중...")
-        current_id = self.selected_id
 
-        def worker():
-            try:
-                other_notes = [n for n in self.data["notes"] if n["id"] != current_id]
-                notes_block = "\n\n".join(
-                    f"[ID:{n['id'][:8]}] {n['title']}\n"
-                    f"태그: {', '.join(n['tags'])}\n"
-                    f"내용: {n['content'][:200]}"
-                    for n in other_notes[:30]
-                )
-                current_note = f"제목: {title}\n내용: {content[:500]}"
-                import google.generativeai as genai
-                model = genai.GenerativeModel(
-                    GEMINI_MODEL,
-                    system_instruction=(
-                        "당신은 지식 관리 전문가입니다. "
-                        "노트들의 주제적 연관성을 분석합니다. "
-                        "반드시 한국어로 답변하세요."
-                    )
-                )
-                response = model.generate_content(f"""현재 노트:
+        # 데이터 준비는 메인 스레드에서 (스레드 안전)
+        other_notes = [n for n in self.data["notes"] if n["id"] != self.selected_id]
+        notes_block = "\n\n".join(
+            f"[ID:{n['id'][:8]}] {n['title']}\n"
+            f"태그: {', '.join(n['tags'])}\n"
+            f"내용: {n['content'][:200]}"
+            for n in other_notes[:30]
+        )
+        current_note = f"제목: {title}\n내용: {content[:500]}"
+
+        def on_similar_success(result_text):
+            short_ids = re.findall(r'\[ID:([a-f0-9]{8})\]', result_text)
+            full_ids = []
+            for sid in short_ids:
+                for n in other_notes:
+                    if n["id"].startswith(sid) and n["id"] not in full_ids:
+                        full_ids.append(n["id"]); break
+            self._done_similar(result_text, full_ids)
+
+        self._call_ai_async(
+            system_instruction=(
+                "당신은 지식 관리 전문가입니다. "
+                "노트들의 주제적 연관성을 분석합니다. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt=f"""현재 노트:
 {current_note}
 
 ---
@@ -1567,20 +1584,9 @@ class BrainApp(tk.Tk):
 
 ---
 노트 목록:
-{notes_block}""")
-                result_text = response.text
-                short_ids = re.findall(r'\[ID:([a-f0-9]{8})\]', result_text)
-                full_ids = []
-                for sid in short_ids:
-                    for n in other_notes:
-                        if n["id"].startswith(sid) and n["id"] not in full_ids:
-                            full_ids.append(n["id"]); break
-                self.after(0, lambda: self._done_similar(result_text, full_ids))
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                self.after(0, lambda: self._ai_error(str(e)))
-
-        threading.Thread(target=worker, daemon=True).start()
+{notes_block}""",
+            on_success=on_similar_success,
+        )
 
     def _done_similar(self, text, note_ids):
         self.similar_btn.configure(text="🔍 비슷한 노트 찾기", state="normal")
@@ -1726,7 +1732,10 @@ class BrainApp(tk.Tk):
 
     def select_note(self, note_id):
         self.selected_id = note_id
-        note = next(n for n in self.data["notes"] if n["id"] == note_id)
+        note = next((n for n in self.data["notes"] if n["id"] == note_id), None)
+        if note is None:
+            logging.error("select_note: note_id=%s not found", note_id)
+            return
         self.note_type.set(note.get("type", "note"))
         self._toggle_link_row()
         self.url_var.set(note.get("url", ""))
@@ -1761,11 +1770,12 @@ class BrainApp(tk.Tk):
             messagebox.showwarning("알림", "제목을 입력하세요."); return
 
         if self.selected_id:
-            for note in self.data["notes"]:
-                if note["id"] == self.selected_id:
-                    note.update(title=title, content=content, tags=tags,
-                                type=ntype, url=url, updated_at=now)
-                    break
+            note = next((n for n in self.data["notes"] if n["id"] == self.selected_id), None)
+            if note is None:
+                logging.error("save_note: note_id=%s not found", self.selected_id)
+                return
+            note.update(title=title, content=content, tags=tags,
+                        type=ntype, url=url, updated_at=now)
         else:
             new = {"id": str(uuid.uuid4()), "title": title, "content": content,
                    "tags": tags, "type": ntype, "url": url,
