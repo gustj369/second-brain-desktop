@@ -70,10 +70,15 @@ def load_data() -> dict:
 
 def save_data(data: dict) -> None:
     """임시 파일 저장 후 원자적 교체 — 저장 중 앱 종료 시 데이터 손상 방지."""
-    tmp = DATA_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, DATA_FILE)
+    try:
+        tmp = DATA_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, DATA_FILE)
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        import tkinter.messagebox as _mb
+        _mb.showerror("저장 실패", f"데이터를 저장할 수 없습니다.\n\n{e}")
 
 def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
@@ -86,8 +91,11 @@ def load_config() -> dict:
     return {}
 
 def save_config(config: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(e, exc_info=True)
 
 def fetch_url_summary(url: str) -> tuple[str, str, Optional[str]]:
     try:
@@ -115,7 +123,8 @@ def _fetch_youtube_transcript(vid: str) -> str:
     from youtube_transcript_api import YouTubeTranscriptApi
     try:
         segments = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
-    except Exception:
+    except Exception as e:
+        logging.warning("ko/en 자막 없음, 폴백 시도: %s", e)
         segments = YouTubeTranscriptApi.get_transcript(vid)
     return " ".join(s["text"] for s in segments)[:5000]
 
@@ -1147,12 +1156,13 @@ class BrainApp(tk.Tk):
 
     def _mark_reviewed(self):
         if not self.selected_id: return
+        note = next((n for n in self.data["notes"] if n["id"] == self.selected_id), None)
+        if note is None:
+            logging.error("_mark_reviewed: note_id=%s not found", self.selected_id)
+            return
         now = datetime.now().isoformat(timespec="seconds")
-        for note in self.data["notes"]:
-            if note["id"] == self.selected_id:
-                note["reviewed_at"] = now
-                note["review_count"] = note.get("review_count", 0) + 1
-                break
+        note["reviewed_at"] = now
+        note["review_count"] = note.get("review_count", 0) + 1
         save_data(self.data)
         self.review_bar.pack_forget()
         self.status_label.configure(text="복습 완료 ✓")
