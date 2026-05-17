@@ -6,7 +6,7 @@
 ![Tkinter](https://img.shields.io/badge/GUI-Tkinter-FF6B35?style=flat)
 ![Gemini](https://img.shields.io/badge/AI-Gemini_API-4285F4?style=flat&logo=google&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat)
-![Version](https://img.shields.io/badge/version-v8.2-blueviolet?style=flat)
+![Version](https://img.shields.io/badge/version-v8.3-blueviolet?style=flat)
 
 <!-- screenshot here -->
 

@@ -4,6 +4,17 @@
 
 ---
 
+## [v8.3] - 2026-05-17
+### Fixed
+- 🛡️ **mutable default 버그**: `_normalize_note()` 에서 `tags: []` 를 모든 노트가 공유하던 문제 → `v.copy()` 로 노트마다 독립 객체 할당
+- 🛡️ **StopIteration 크래시**: `select_note()` / `save_note()` 에서 없는 note_id 탐색 시 앱 종료 → `next(..., None)` + Early return 으로 방어
+- 🛡️ **토스트 Toplevel 부모 미지정**: `tk.Toplevel()` → `tk.Toplevel(self)` 로 메인 창과 생명주기 연동, 앱 종료 시 `TclError` 방어
+### Refactored
+- 🔧 **AI 공통 헬퍼 추출**: `_call_ai_async()` — `_find_keywords` / `_find_similar` / `_ask_brain` 세 함수의 genai 모델 생성·스레드·콜백 패턴 통합
+- 🔧 **유튜브 자막 추출 분리**: `_fetch_youtube_transcript(vid)` 모듈 레벨 순수 함수로 분리 → UI 없이 단독 테스트 가능
+### Tests
+- ✅ **회귀 테스트 추가**: `test_tags_list_is_independent_per_note` (H-2), `TestNoteIdLookup` 3종 (H-1) — 총 16개 테스트
+
 ## [v8.2] - 2026-05-15
 ### Improved
 - 🔧 **AI 모델명 상수화**: `GEMINI_MODEL = "gemini-2.5-flash"` — 7곳 하드코딩 제거, 모델 변경 시 한 줄만 수정

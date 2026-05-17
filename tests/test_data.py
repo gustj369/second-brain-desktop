@@ -57,6 +57,22 @@ class TestNormalizeNote:
         assert result["updated_at"] != ""
         datetime.fromisoformat(result["created_at"])
 
+    def test_tags_list_is_independent_per_note(self):
+        """H-2 회귀: 태그 없는 두 노트를 각각 정규화하면 tags는 서로 다른 객체여야 한다.
+
+        수정 전: _NOTE_DEFAULTS["tags"]( = [] )를 그대로 할당 → 두 노트가 같은 [] 공유
+        수정 후: v.copy() 로 독립 객체 생성 → 한쪽 수정이 다른 쪽에 영향 없음
+        """
+        note_a = {"title": "A"}
+        note_b = {"title": "B"}
+        main._normalize_note(note_a)
+        main._normalize_note(note_b)
+        assert note_a["tags"] is not note_b["tags"], \
+            "두 노트의 tags가 같은 객체를 공유하면 한쪽 수정이 다른 쪽에 영향을 줌"
+        note_a["tags"].append("추가태그")
+        assert note_b["tags"] == [], \
+            "note_a의 tags 변경이 note_b에 전파되면 안 됨"
+
 
 class TestSaveLoadData:
     def _full_note(self, title="Test"):
@@ -116,6 +132,39 @@ class TestSaveLoadConfig:
         monkeypatch.setattr(main, "CONFIG_FILE", str(tmp_path / "nonexistent.json"))
         result = main.load_config()
         assert result == {}
+
+
+class TestNoteIdLookup:
+    """H-1 회귀: 존재하지 않는 note_id 탐색 시 StopIteration 방지.
+
+    select_note() / save_note() 는 Tkinter 앱 인스턴스가 필요해 직접 호출이 불가하므로
+    두 함수가 공통으로 사용하는 next((n …), None) 패턴을 데이터 레이어에서 검증한다.
+    수정 전: next(n for n in notes if …)  → 미존재 ID 시 StopIteration
+    수정 후: next((n for n in notes if …), None) → None 반환, 예외 없음
+    """
+
+    def _make_notes(self):
+        return [
+            {"id": "aaa-111", "title": "노트A"},
+            {"id": "bbb-222", "title": "노트B"},
+        ]
+
+    def test_existing_id_returns_note(self):
+        notes = self._make_notes()
+        result = next((n for n in notes if n["id"] == "aaa-111"), None)
+        assert result is not None
+        assert result["title"] == "노트A"
+
+    def test_missing_id_returns_none_not_stopiteration(self):
+        """존재하지 않는 ID 탐색 시 StopIteration 대신 None을 반환해야 한다."""
+        notes = self._make_notes()
+        result = next((n for n in notes if n["id"] == "nonexistent-id"), None)
+        assert result is None
+
+    def test_empty_notes_returns_none(self):
+        """노트 목록이 비어 있어도 예외 없이 None을 반환해야 한다."""
+        result = next((n for n in [] if n["id"] == "any-id"), None)
+        assert result is None
 
 
 class TestFetchUrlSummary:

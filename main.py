@@ -32,7 +32,7 @@ _NOTE_DEFAULTS = {
     "url": "", "reviewed_at": None, "review_count": 0,
 }
 
-def _normalize_note(note):
+def _normalize_note(note: dict) -> dict:
     """오래된·손상된 노트 필드를 안전하게 보정."""
     for k, v in _NOTE_DEFAULTS.items():
         if k not in note:
@@ -1295,8 +1295,9 @@ class BrainApp(tk.Tk):
                                      command=self._youtube_summary)
 
         # 제목
-        tk.Label(parent, text="제목", bg=BG, fg=TEXT_DIM,
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=24, pady=(12, 2))
+        self._title_label = tk.Label(parent, text="제목", bg=BG, fg=TEXT_DIM,
+                                     font=("Segoe UI", 9))
+        self._title_label.pack(anchor="w", padx=24, pady=(12, 2))
         self.title_var = tk.StringVar()
         tk.Entry(parent, textvariable=self.title_var,
                  bg=BG3, fg=TEXT, insertbackground=TEXT,
@@ -1435,7 +1436,7 @@ class BrainApp(tk.Tk):
     def _toggle_link_row(self):
         if self.note_type.get() == "link":
             self.url_row.pack(fill="x", padx=24, pady=(0, 0),
-                               before=self.right_parent.winfo_children()[2])
+                               before=self._title_label)
             self._on_url_change()
         else:
             self.url_row.pack_forget()
