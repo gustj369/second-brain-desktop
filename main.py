@@ -1181,14 +1181,21 @@ class BrainApp(tk.Tk):
             f"자막 추출 실패:\n{err}\n\n자막이 없거나 비공개 영상일 수 있어요.")
 
     # ── 망각 방지 복습 ────────────────────────────────
-    def _days_since_review(self, note):
+    def _days_since_review(self, note) -> int:
+        """노트를 마지막으로 확인한 지 며칠이 지났는지 반환한다.
+
+        reviewed_at → created_at 순으로 기준 날짜를 선택한다.
+        날짜 필드가 없거나 파싱에 실패하면 0을 반환한다 (복습 알림 미표시).
+        이 동작은 의도적 선택: 잘못된 날짜 때문에 알림이 뜨는 것보다
+        누락되는 쪽이 사용자 경험상 덜 방해가 된다.
+        """
         ref = note.get("reviewed_at") or note.get("created_at", "")
         if not ref:
             return 0
         try:
             return (date.today() - datetime.fromisoformat(ref).date()).days
         except Exception as e:
-            logging.error(e, exc_info=True)
+            logging.warning("_days_since_review: 날짜 파싱 실패, 0 반환 — %s", e)
             return 0
 
     def _mark_reviewed(self):

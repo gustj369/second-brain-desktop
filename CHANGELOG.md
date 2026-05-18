@@ -4,6 +4,11 @@
 
 ---
 
+## [v8.7] - 2026-05-18
+### Refactored
+- 🔧 **`_days_since_review()` 동작 명시화**: 반환 타입 힌트 `-> int` 추가, docstring으로 0 반환이 의도적 선택임을 문서화
+- 🔧 **`logging.error` → `logging.warning`**: 날짜 파싱 실패는 앱 오류가 아닌 데이터 경고 수준으로 조정
+
 ## [v8.6] - 2026-05-18
 ### Refactored
 - 🔧 **`_run_ai_async()` 모듈 헬퍼 추출**: genai 모델 생성 · 백그라운드 스레드 · `after(0, 콜백)` 패턴을 모듈 레벨 순수 함수로 통합
