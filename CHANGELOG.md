@@ -4,6 +4,13 @@
 
 ---
 
+## [v8.8] - 2026-05-18
+### Tests
+- ✅ **`_find_non_overlapping_pair()` 단위 테스트**: `TestFindNonOverlappingPair` 클래스 추가 — `mock.MagicMock()`을 `self`로 사용해 Tkinter 없이 검증
+  - `test_returns_no_overlap_true_when_tags_differ`: 태그가 겹치지 않는 쌍이 있으면 `no_overlap=True` 반환 확인
+  - `test_fallback_returns_no_overlap_false_when_all_tags_overlap`: 100회 시도 후 겹치지 않는 쌍 미발견 시 `no_overlap=False` 반환 확인
+- 총 **25개 테스트**
+
 ## [v8.7] - 2026-05-18
 ### Refactored
 - 🔧 **`_days_since_review()` 동작 명시화**: 반환 타입 힌트 `-> int` 추가, docstring으로 0 반환이 의도적 선택임을 문서화

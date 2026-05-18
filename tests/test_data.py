@@ -244,6 +244,34 @@ class TestBackup:
         assert mock_err.call_count == 0
 
 
+class TestFindNonOverlappingPair:
+    """BrainApp._find_non_overlapping_pair() — self.data만 사용하므로 MagicMock으로 검증."""
+
+    def _make_self(self, notes):
+        app = mock.MagicMock()
+        app.data = {"notes": notes}
+        return app
+
+    def test_returns_no_overlap_true_when_tags_differ(self):
+        """태그가 겹치지 않는 노트 쌍이 있으면 no_overlap=True를 반환해야 한다."""
+        notes = [
+            {"id": "a", "title": "A", "tags": ["python"]},
+            {"id": "b", "title": "B", "tags": ["cooking"]},
+        ]
+        a, b, no_overlap = main.BrainApp._find_non_overlapping_pair(self._make_self(notes))
+        assert no_overlap is True
+        assert set(a["tags"]) & set(b["tags"]) == set()
+
+    def test_fallback_returns_no_overlap_false_when_all_tags_overlap(self):
+        """100회 시도 후 태그 겹치지 않는 쌍을 못 찾으면 no_overlap=False를 반환해야 한다."""
+        notes = [
+            {"id": "a", "title": "A", "tags": ["공통태그"]},
+            {"id": "b", "title": "B", "tags": ["공통태그"]},
+        ]
+        _, _, no_overlap = main.BrainApp._find_non_overlapping_pair(self._make_self(notes))
+        assert no_overlap is False
+
+
 class TestFetchUrlSummary:
     def test_unreachable_url_returns_error_tuple(self):
         title, body, err = main.fetch_url_summary("http://localhost:0/no-such-page")
