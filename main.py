@@ -134,6 +134,31 @@ def _fetch_youtube_transcript(vid: str) -> str:
         fetched = next(iter(transcript_list)).fetch()
     return " ".join(s["text"] for s in fetched.to_raw_data())[:5000]
 
+def _run_ai_async(
+    parent: tk.Misc,
+    system_instruction: str,
+    prompt: str,
+    on_success: Callable[[str], None],
+    on_error: Callable[[str], None],
+) -> None:
+    """모듈 레벨 AI 공통 헬퍼: genai 모델 생성 → 백그라운드 스레드 → after(0, 콜백).
+
+    BrainApp._call_ai_async 와 독립 다이얼로그(BriefingDialog, IdeaColliderDialog)에서
+    공용으로 사용한다. parent는 after() 스케줄링에만 사용된다.
+    """
+    def worker():
+        try:
+            import google.generativeai as genai
+            model = genai.GenerativeModel(
+                GEMINI_MODEL, system_instruction=system_instruction)
+            response = model.generate_content(prompt)
+            parent.after(0, lambda: on_success(response.text))
+        except Exception as e:
+            logging.error(e, exc_info=True)
+            parent.after(0, lambda err=str(e): on_error(err))
+
+    threading.Thread(target=worker, daemon=True).start()
+
 # ── API 키 다이얼로그 ──────────────────────────────────
 class ApiKeyDialog(tk.Toplevel):
     def __init__(self, parent):
@@ -201,25 +226,21 @@ class BriefingDialog(tk.Toplevel):
         threading.Thread(target=lambda: self._fetch(notes), daemon=True).start()
 
     def _fetch(self, notes):
-        try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(
-                GEMINI_MODEL,
-                system_instruction="당신은 지적 성장을 돕는 코치입니다. 반드시 한국어로 답변하세요."
-            )
-            notes_text = "\n\n".join(
-                f"[노트 {i+1}] 제목: {n['title']}\n내용: {n['content'][:300]}"
-                for i, n in enumerate(notes)
-            )
-            response = model.generate_content(
-                f"다음 노트 {len(notes)}개를 읽고, 각각에 대해 오늘 다시 생각해볼 질문 1개씩을 한국어로 만들어줘.\n\n"
-                f"형식: [노트 1] 제목\n질문: (내용)\n\n노트 목록:\n{notes_text}"
-            )
-            result = response.text
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            result = f"AI 연결 오류: {str(e)}"
-        self._parent.after(0, lambda: self._update(result))
+        notes_text = "\n\n".join(
+            f"[노트 {i+1}] 제목: {n['title']}\n내용: {n['content'][:300]}"
+            for i, n in enumerate(notes)
+        )
+        prompt = (
+            f"다음 노트 {len(notes)}개를 읽고, 각각에 대해 오늘 다시 생각해볼 질문 1개씩을 한국어로 만들어줘.\n\n"
+            f"형식: [노트 1] 제목\n질문: (내용)\n\n노트 목록:\n{notes_text}"
+        )
+        _run_ai_async(
+            self._parent,
+            "당신은 지적 성장을 돕는 코치입니다. 반드시 한국어로 답변하세요.",
+            prompt,
+            on_success=lambda text: self._update(text),
+            on_error=lambda err: self._update(f"AI 연결 오류: {err}"),
+        )
 
     def _update(self, text):
         if not self.winfo_exists(): return
@@ -280,29 +301,33 @@ class IdeaColliderDialog(tk.Toplevel):
         threading.Thread(target=self._fetch, daemon=True).start()
 
     def _fetch(self):
-        try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(
-                GEMINI_MODEL,
-                system_instruction=(
-                    "당신은 창의적인 아이디어 전문가입니다. "
-                    "전혀 다른 두 개념을 연결하여 혁신적인 아이디어를 만들어냅니다. "
-                    "반드시 한국어로 답변하세요."
-                )
-            )
-            prompt = (
-                "다음 두 노트는 전혀 다른 주제입니다.\n"
-                "억지로라도 연결해서 새로운 아이디어나 인사이트를 한국어로 3가지 제시해줘.\n"
-                "창의적일수록 좋아.\n\n"
-                f"[노트 A] {self._note_a['title']}\n{self._note_a['content'][:400]}\n\n"
-                f"[노트 B] {self._note_b['title']}\n{self._note_b['content'][:400]}"
-            )
-            response = model.generate_content(prompt)
-            self._result_text = response.text
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            self._result_text = f"오류: {str(e)}"
-        self._parent_app.after(0, lambda: self._update(self._result_text))
+        prompt = (
+            "다음 두 노트는 전혀 다른 주제입니다.\n"
+            "억지로라도 연결해서 새로운 아이디어나 인사이트를 한국어로 3가지 제시해줘.\n"
+            "창의적일수록 좋아.\n\n"
+            f"[노트 A] {self._note_a['title']}\n{self._note_a['content'][:400]}\n\n"
+            f"[노트 B] {self._note_b['title']}\n{self._note_b['content'][:400]}"
+        )
+
+        def on_success(text):
+            self._result_text = text
+            self._update(text)
+
+        def on_error(err):
+            self._result_text = f"오류: {err}"
+            self._update(self._result_text)
+
+        _run_ai_async(
+            self._parent_app,
+            (
+                "당신은 창의적인 아이디어 전문가입니다. "
+                "전혀 다른 두 개념을 연결하여 혁신적인 아이디어를 만들어냅니다. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt,
+            on_success=on_success,
+            on_error=on_error,
+        )
 
     def _update(self, text):
         if not self.winfo_exists(): return
@@ -1503,21 +1528,9 @@ class BrainApp(tk.Tk):
     def _call_ai_async(self, system_instruction: str, prompt: str,
                        on_success: Callable[[str], None],
                        on_error: Optional[Callable[[str], None]] = None):
-        """공통: genai 모델 생성 → 백그라운드 스레드 → after(0, 콜백)."""
-        err_cb = on_error if on_error else self._ai_error
-
-        def worker():
-            try:
-                import google.generativeai as genai
-                model = genai.GenerativeModel(
-                    GEMINI_MODEL, system_instruction=system_instruction)
-                response = model.generate_content(prompt)
-                self.after(0, lambda: on_success(response.text))
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                self.after(0, lambda err=str(e): err_cb(err))
-
-        threading.Thread(target=worker, daemon=True).start()
+        """공통: _run_ai_async 모듈 헬퍼에 위임."""
+        _run_ai_async(self, system_instruction, prompt,
+                      on_success, on_error if on_error else self._ai_error)
 
     def _ai_error(self, err):
         """공통 AI 오류 처리 — 상태 메시지 + 결과창 표시만 담당.
