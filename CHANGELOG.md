@@ -4,6 +4,14 @@
 
 ---
 
+## [v8.6] - 2026-05-18
+### Refactored
+- 🔧 **`_run_ai_async()` 모듈 헬퍼 추출**: genai 모델 생성 · 백그라운드 스레드 · `after(0, 콜백)` 패턴을 모듈 레벨 순수 함수로 통합
+- 🔧 **`BriefingDialog._fetch()`**: 직접 `genai` + `threading` 호출 → `_run_ai_async` 위임
+- 🔧 **`IdeaColliderDialog._fetch()`**: 동일하게 `_run_ai_async` 위임
+- 🔧 **`ThreadsDraftDialog._fetch()`**: 직접 `genai` + `threading` 호출 → `_run_ai_async` 위임
+- 🔧 **`BrainApp._call_ai_async()`**: 내부 로직 제거 → `_run_ai_async` 위임으로 2줄 단순화
+
 ## [v8.5] - 2026-05-18
 ### Fixed
 - 🛡️ **`_backup()` 예외 처리**: `shutil.copy2()` 실패 시 `logging.error` + `showerror` 팝업 — 디스크 풀·권한 오류 시 앱 비정상 종료 방지

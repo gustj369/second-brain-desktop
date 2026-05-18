@@ -385,36 +385,38 @@ class ThreadsDraftDialog(tk.Toplevel):
                                    command=self._copy)
         self.copy_btn.pack(side="left", ipadx=14, ipady=6)
         self.grab_set()
-        threading.Thread(target=lambda: self._fetch(title, content), daemon=True).start()
+        note_content = f"제목: {title}\n\n{content[:1500]}"
+        prompt = (
+            "아래 노트를 바탕으로 Threads 포스트 초안을 작성해주세요.\n\n"
+            "스타일 규칙:\n"
+            "- 첫 줄은 멈춰서 읽게 만드는 후킹 문장\n"
+            "- 말투: ~었어요, ~이에요, ~더라고요 (편안한 구어체)\n"
+            "- ~합니다 체 절대 금지\n"
+            "- 결론에서 교훈 강요 금지\n"
+            "- 개인 경험을 자연스럽게 녹일 것\n"
+            "- 3~5문단, 각 문단 2~3줄\n"
+            "- 마지막 줄: 질문이나 여운을 남기는 문장\n\n"
+            f"[노트 내용]\n{note_content}"
+        )
 
-    def _fetch(self, title, content):
-        try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(
-                GEMINI_MODEL,
-                system_instruction=(
-                    "당신은 '드라마틱 라이프'라는 직장인 대상 Threads 계정 운영자입니다. "
-                    "반드시 한국어로 답변하세요."
-                )
-            )
-            note_content = f"제목: {title}\n\n{content[:1500]}"
-            response = model.generate_content(
-                "아래 노트를 바탕으로 Threads 포스트 초안을 작성해주세요.\n\n"
-                "스타일 규칙:\n"
-                "- 첫 줄은 멈춰서 읽게 만드는 후킹 문장\n"
-                "- 말투: ~었어요, ~이에요, ~더라고요 (편안한 구어체)\n"
-                "- ~합니다 체 절대 금지\n"
-                "- 결론에서 교훈 강요 금지\n"
-                "- 개인 경험을 자연스럽게 녹일 것\n"
-                "- 3~5문단, 각 문단 2~3줄\n"
-                "- 마지막 줄: 질문이나 여운을 남기는 문장\n\n"
-                f"[노트 내용]\n{note_content}"
-            )
-            self._result_text = response.text
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            self._result_text = f"오류: {str(e)}"
-        self._parent.after(0, lambda: self._update(self._result_text))
+        def on_success(text):
+            self._result_text = text
+            self._update(text)
+
+        def on_error(err):
+            self._result_text = f"오류: {err}"
+            self._update(self._result_text)
+
+        _run_ai_async(
+            self._parent,
+            (
+                "당신은 '드라마틱 라이프'라는 직장인 대상 Threads 계정 운영자입니다. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt,
+            on_success=on_success,
+            on_error=on_error,
+        )
 
     def _update(self, text):
         if not self.winfo_exists(): return
