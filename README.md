@@ -1,14 +1,6 @@
 # 🧠 Second Brain Desktop
 
-> 비개발자가 Claude와 함께 바이브 코딩으로 만든 개인 지식 관리 데스크탑 앱
-
-![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat&logo=python&logoColor=white)
-![Tkinter](https://img.shields.io/badge/GUI-Tkinter-FF6B35?style=flat)
-![Gemini](https://img.shields.io/badge/AI-Gemini_API-4285F4?style=flat&logo=google&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green?style=flat)
-![Version](https://img.shields.io/badge/version-v8.3-blueviolet?style=flat)
-
-<!-- screenshot here -->
+Claude와 Codex로 함께 바이브 코딩으로 만든 개인 지식 관리 시스템
 
 ## ✨ 현재 기능
 
