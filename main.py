@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json, uuid, os, threading, re, shutil, random, time, logging
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Optional, Callable
 from datetime import datetime, date, timedelta
 from collections import Counter, defaultdict
 
@@ -24,8 +24,10 @@ TEXT_DIM = "#858585"
 BORDER   = "#3c3c3c"
 SEL      = "#094771"
 
-TOAST_TIMEOUT_MS  = 8000
-CLIPBOARD_MIN_LEN = 50
+TOAST_TIMEOUT_MS      = 8000
+CLIPBOARD_MIN_LEN     = 50
+ASK_BRAIN_MAX_NOTES   = 200   # _ask_brain(): AI에 전달할 최대 노트 수
+COLLISION_CONTEXT_LIMIT = 30  # _find_similar(): 유사 노트 탐색 시 컨텍스트 노트 수
 
 _NOTE_DEFAULTS = {
     "title": "", "content": "", "tags": [], "type": "note",
@@ -103,6 +105,7 @@ def fetch_url_summary(url: str) -> tuple[str, str, Optional[str]]:
         from bs4 import BeautifulSoup
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=8)
+        res.raise_for_status()
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
         title = soup.title.string.strip() if soup.title else ""
@@ -119,14 +122,17 @@ def _fetch_youtube_transcript(vid: str) -> str:
 
     한국어 → 영어 순으로 자막을 시도하고, 둘 다 없으면 첫 번째 가용 자막을 사용한다.
     실패 시 예외를 그대로 올린다 (호출측에서 처리).
+    youtube-transcript-api 1.x 인스턴스 방식 사용.
     """
     from youtube_transcript_api import YouTubeTranscriptApi
+    api = YouTubeTranscriptApi()
     try:
-        segments = YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"])
+        fetched = api.fetch(vid, languages=["ko", "en"])
     except Exception as e:
         logging.warning("ko/en 자막 없음, 폴백 시도: %s", e)
-        segments = YouTubeTranscriptApi.get_transcript(vid)
-    return " ".join(s["text"] for s in segments)[:5000]
+        transcript_list = api.list(vid)
+        fetched = next(iter(transcript_list)).fetch()
+    return " ".join(s["text"] for s in fetched.to_raw_data())[:5000]
 
 # ── API 키 다이얼로그 ──────────────────────────────────
 class ApiKeyDialog(tk.Toplevel):
@@ -1043,9 +1049,9 @@ class BrainApp(tk.Tk):
         self.ask_btn.configure(text="생각 중...", state="disabled")
         self.status_label.configure(text="나에게 묻는 중...")
         notes = self.data["notes"]
-        truncated = len(notes) > 200
-        notes_to_send = sorted(notes, key=lambda n: n["updated_at"], reverse=True)[:200]
-        notice = "※ 최근 200개 노트 기준으로 답변합니다.\n\n" if truncated else ""
+        truncated = len(notes) > ASK_BRAIN_MAX_NOTES
+        notes_to_send = sorted(notes, key=lambda n: n["updated_at"], reverse=True)[:ASK_BRAIN_MAX_NOTES]
+        notice = f"※ 최근 {ASK_BRAIN_MAX_NOTES}개 노트 기준으로 답변합니다.\n\n" if truncated else ""
         notes_context = "\n".join(
             f"- [{n['title']}]: {n['content'][:200]}" for n in notes_to_send)
 
@@ -1107,29 +1113,33 @@ class BrainApp(tk.Tk):
         self.youtube_btn.configure(text="자막 추출 중...", state="disabled")
         self.status_label.configure(text="YouTube 자막 추출 중...")
 
-        def worker():
+        def fetch_transcript():
+            """1단계: 자막 추출 (네트워크) — 성공 시 메인 스레드에서 AI 요약 예약."""
             try:
                 transcript = _fetch_youtube_transcript(vid)
-
-                import google.generativeai as genai
-                model = genai.GenerativeModel(
-                    GEMINI_MODEL,
-                    system_instruction=(
-                        "당신은 유튜브 영상 내용을 분석하는 전문가입니다. "
-                        "반드시 한국어로 답변하세요."
-                    )
-                )
-                response = model.generate_content(
-                    "다음 유튜브 영상 자막을 읽고 핵심 내용을 한국어로 요약해줘.\n"
-                    "형식: 핵심 주제 1줄 + 주요 포인트 5개 (각 1~2줄)\n\n"
-                    f"자막:\n{transcript}"
-                )
-                self.after(0, lambda: self._done_youtube(response.text))
+                self.after(0, lambda t=transcript: self._youtube_start_ai(t))
             except Exception as e:
                 logging.error(e, exc_info=True)
                 self.after(0, lambda: self._youtube_error(str(e)))
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=fetch_transcript, daemon=True).start()
+
+    def _youtube_start_ai(self, transcript: str):
+        """2단계: Gemini AI 요약 — _call_ai_async 공통 헬퍼 사용."""
+        self.status_label.configure(text="AI 요약 중...")
+        self._call_ai_async(
+            system_instruction=(
+                "당신은 유튜브 영상 내용을 분석하는 전문가입니다. "
+                "반드시 한국어로 답변하세요."
+            ),
+            prompt=(
+                "다음 유튜브 영상 자막을 읽고 핵심 내용을 한국어로 요약해줘.\n"
+                "형식: 핵심 주제 1줄 + 주요 포인트 5개 (각 1~2줄)\n\n"
+                f"자막:\n{transcript}"
+            ),
+            on_success=self._done_youtube,
+            on_error=self._youtube_error,
+        )
 
     def _done_youtube(self, text):
         self.youtube_btn.configure(text="📺 자막 요약", state="normal")
@@ -1491,7 +1501,8 @@ class BrainApp(tk.Tk):
         self.status_label.configure(text="AI 분석 중...")
 
     def _call_ai_async(self, system_instruction: str, prompt: str,
-                       on_success, on_error=None):
+                       on_success: Callable[[str], None],
+                       on_error: Optional[Callable[[str], None]] = None):
         """공통: genai 모델 생성 → 백그라운드 스레드 → after(0, 콜백)."""
         err_cb = on_error if on_error else self._ai_error
 
@@ -1509,8 +1520,8 @@ class BrainApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _ai_error(self, err):
-        self.keywords_btn.configure(text="🔗 연결고리 찾기", state="normal")
-        self.similar_btn.configure(text="🔍 비슷한 노트 찾기", state="normal")
+        """공통 AI 오류 처리 — 상태 메시지 + 결과창 표시만 담당.
+        버튼 복원은 각 호출부의 on_error 콜백에서 처리한다."""
         self.status_label.configure(text="API 연결 실패 - 키를 확인해주세요")
         self._show_ai_result("❌ 오류", f"API 연결 실패 - 키를 확인해주세요\n\n{err}")
 
@@ -1523,6 +1534,10 @@ class BrainApp(tk.Tk):
             messagebox.showwarning("알림", "노트 내용을 먼저 입력하세요."); return
         self._ai_set_loading(self.keywords_btn, "분석 중...")
         note_text = f"제목: {title}\n\n본문: {content[:1000]}"
+        def _keywords_error(err):
+            self.keywords_btn.configure(text="🔗 연결고리 찾기", state="normal")
+            self._ai_error(err)
+
         self._call_ai_async(
             system_instruction=(
                 "당신은 지식 관리 전문가입니다. "
@@ -1534,6 +1549,7 @@ class BrainApp(tk.Tk):
                 f"각각의 연결 이유를 한국어로 알려줘:\n\n{note_text}"
             ),
             on_success=self._done_keywords,
+            on_error=_keywords_error,
         )
 
     def _done_keywords(self, text):
@@ -1558,7 +1574,7 @@ class BrainApp(tk.Tk):
             f"[ID:{n['id'][:8]}] {n['title']}\n"
             f"태그: {', '.join(n['tags'])}\n"
             f"내용: {n['content'][:200]}"
-            for n in other_notes[:30]
+            for n in other_notes[:COLLISION_CONTEXT_LIMIT]
         )
         current_note = f"제목: {title}\n내용: {content[:500]}"
 
@@ -1570,6 +1586,10 @@ class BrainApp(tk.Tk):
                     if n["id"].startswith(sid) and n["id"] not in full_ids:
                         full_ids.append(n["id"]); break
             self._done_similar(result_text, full_ids)
+
+        def _similar_error(err):
+            self.similar_btn.configure(text="🔍 비슷한 노트 찾기", state="normal")
+            self._ai_error(err)
 
         self._call_ai_async(
             system_instruction=(
@@ -1597,6 +1617,7 @@ class BrainApp(tk.Tk):
 노트 목록:
 {notes_block}""",
             on_success=on_similar_success,
+            on_error=_similar_error,
         )
 
     def _done_similar(self, text, note_ids):
@@ -1635,8 +1656,12 @@ class BrainApp(tk.Tk):
             messagebox.showinfo("알림", "백업할 데이터가 없습니다."); return
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = os.path.join(os.path.dirname(DATA_FILE), f"brain_backup_{date_str}.json")
-        shutil.copy2(DATA_FILE, backup_path)
-        messagebox.showinfo("백업 완료", f"저장됨:\n{backup_path}")
+        try:
+            shutil.copy2(DATA_FILE, backup_path)
+            messagebox.showinfo("백업 완료", f"저장됨:\n{backup_path}")
+        except Exception as e:
+            logging.error(e, exc_info=True)
+            messagebox.showerror("백업 실패", f"백업을 저장할 수 없습니다.\n\n{e}")
 
     # ── 통계 & 태그 클라우드 ──────────────────────────
     def _update_stats(self):

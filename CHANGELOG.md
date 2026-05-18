@@ -4,6 +4,27 @@
 
 ---
 
+## [v8.5] - 2026-05-18
+### Fixed
+- 🛡️ **`_backup()` 예외 처리**: `shutil.copy2()` 실패 시 `logging.error` + `showerror` 팝업 — 디스크 풀·권한 오류 시 앱 비정상 종료 방지
+- 🛡️ **`fetch_url_summary()` HTTP 오류 처리**: `res.raise_for_status()` 추가 — 4xx/5xx 응답을 오류로 처리, 오류 페이지 HTML이 노트에 저장되던 문제 수정
+- 🔧 **`_ai_error()` 버튼 복원 책임 분산**: 하드코딩된 버튼 복원 제거 → `_find_keywords` · `_find_similar` 각 호출부의 `on_error` 콜백에서 자신의 버튼 복원
+- 🔧 **`_fetch_youtube_transcript()` 1.x 호환성**: `get_transcript()` 클래스 메서드 → `YouTubeTranscriptApi()` 인스턴스 + `fetch()` + `to_raw_data()` 방식으로 교체 — YouTube 자막 요약 기능 실제 동작 복원
+### Tests
+- ✅ **`save_config()` 실패 경로 회귀 테스트**: `test_save_config_logs_on_failure` — `builtins.open` monkeypatch로 `logging.error` 1회 호출 검증
+- ✅ **`fetch_url_summary()` HTTP 오류 회귀 테스트**: `test_http_error_returns_error_tuple` — mock 404 응답 시 `err` 반환 검증 — 총 21개 테스트
+
+## [v8.4] - 2026-05-18
+### Fixed
+- 🛡️ **`save_data()` 예외 처리**: 저장 실패 시 `logging.error` + `showerror` 팝업으로 사용자에게 명시적 알림
+- 🛡️ **`save_config()` 예외 처리**: 설정 저장 실패 시 `logging.error` (비치명적, UI 팝업 없음)
+- 🛡️ **`_mark_reviewed()` 방어 코드**: `for/break` → `next(..., None)` + Early return + `logging.error` — 없는 note_id 탐색 시 크래시 방지
+- 🔍 **`_fetch_youtube_transcript()` 폴백 로깅**: ko/en 자막 미존재 시 `except Exception as e` + `logging.warning` 추가
+### Refactored
+- 🔧 **매직 넘버 상수화**: `ASK_BRAIN_MAX_NOTES = 200`, `COLLISION_CONTEXT_LIMIT = 30` — `_ask_brain()` · `_find_similar()` 하드코딩 제거
+### Tests
+- ✅ **`save_data` 실패 경로 회귀 테스트**: `test_save_data_shows_error_on_failure` — `os.replace` monkeypatch로 예외 경로 강제 진입, `showerror` 1회 호출 검증 — 총 17개 테스트
+
 ## [v8.3] - 2026-05-17
 ### Fixed
 - 🛡️ **mutable default 버그**: `_normalize_note()` 에서 `tags: []` 를 모든 노트가 공유하던 문제 → `v.copy()` 로 노트마다 독립 객체 할당

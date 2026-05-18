@@ -118,6 +118,16 @@ class TestSaveLoadData:
             result = main.load_data()
         assert result == {"notes": []}
 
+    def test_save_data_shows_error_on_failure(self, tmp_path, monkeypatch):
+        """Fix-1 회귀: os.replace 실패 시 showerror 팝업을 1회 호출해야 한다."""
+        monkeypatch.setattr(main, "DATA_FILE", str(tmp_path / "brain.json"))
+        monkeypatch.setattr("os.replace", mock.Mock(side_effect=OSError("디스크 꽉 참")))
+        data = {"notes": [self._full_note("실패 테스트")]}
+        with mock.patch("tkinter.messagebox.showerror") as mocked:
+            main.save_data(data)
+        assert mocked.call_count == 1
+        assert "저장 실패" in mocked.call_args[0][0]
+
 
 class TestSaveLoadConfig:
     def test_roundtrip(self, tmp_path, monkeypatch):
@@ -132,6 +142,14 @@ class TestSaveLoadConfig:
         monkeypatch.setattr(main, "CONFIG_FILE", str(tmp_path / "nonexistent.json"))
         result = main.load_config()
         assert result == {}
+
+    def test_save_config_logs_on_failure(self, tmp_path, monkeypatch):
+        """save_config() 실패 경로 회귀: 저장 실패 시 logging.error를 1회 호출해야 한다."""
+        monkeypatch.setattr(main, "CONFIG_FILE", str(tmp_path / "config.json"))
+        with mock.patch("builtins.open", side_effect=OSError("권한 없음")):
+            with mock.patch("main.logging") as mock_log:
+                main.save_config({"api_key": "test"})
+        mock_log.error.assert_called_once()
 
 
 class TestNoteIdLookup:
@@ -167,6 +185,65 @@ class TestNoteIdLookup:
         assert result is None
 
 
+class TestFetchYoutubeTranscript:
+    """_fetch_youtube_transcript() — YouTubeTranscriptApi 1.x 인스턴스 방식 mock 검증."""
+
+    _SEGMENTS_KO = [{"text": "안녕하세요"}, {"text": "반갑습니다"}]
+    _SEGMENTS_FB = [{"text": "hello"}, {"text": "world"}]
+
+    def test_ko_en_success_returns_joined_text(self):
+        """ko/en 자막이 있으면 세그먼트를 공백으로 합쳐 반환한다."""
+        with mock.patch("youtube_transcript_api.YouTubeTranscriptApi") as MockClass:
+            mock_fetched = mock.Mock()
+            mock_fetched.to_raw_data.return_value = self._SEGMENTS_KO
+            MockClass.return_value.fetch.return_value = mock_fetched
+            result = main._fetch_youtube_transcript("dQw4w9WgXcQ")
+        MockClass.return_value.fetch.assert_called_once_with("dQw4w9WgXcQ", languages=["ko", "en"])
+        assert result == "안녕하세요 반갑습니다"
+
+    def test_fallback_used_when_ko_en_unavailable(self):
+        """ko/en 자막 실패 시 list() 폴백으로 전환하고 logging.warning을 1회 기록한다."""
+        with mock.patch("youtube_transcript_api.YouTubeTranscriptApi") as MockClass:
+            mock_instance = MockClass.return_value
+            mock_instance.fetch.side_effect = Exception("No transcript")
+            # 폴백: api.list() → iter() → next() → .fetch() → .to_raw_data()
+            mock_fb_fetched = mock.Mock()
+            mock_fb_fetched.to_raw_data.return_value = self._SEGMENTS_FB
+            mock_transcript = mock.Mock()
+            mock_transcript.fetch.return_value = mock_fb_fetched
+            mock_instance.list.return_value = [mock_transcript]
+            with mock.patch("main.logging") as mock_log:
+                result = main._fetch_youtube_transcript("dQw4w9WgXcQ")
+        assert result == "hello world"
+        mock_log.warning.assert_called_once()
+
+
+class TestBackup:
+    """BrainApp._backup() — self 미사용 메서드이므로 MagicMock으로 Tkinter 없이 검증."""
+
+    def test_backup_shows_error_on_failure(self, tmp_path, monkeypatch):
+        """shutil.copy2 실패 시 showerror를 1회 호출해야 한다."""
+        path = tmp_path / "brain.json"
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(main, "DATA_FILE", str(path))
+        with mock.patch("main.shutil.copy2", side_effect=OSError("디스크 꽉 참")):
+            with mock.patch("tkinter.messagebox.showerror") as mock_err:
+                main.BrainApp._backup(mock.MagicMock())
+        assert mock_err.call_count == 1
+        assert "백업 실패" in mock_err.call_args[0][0]
+
+    def test_backup_shows_info_on_success(self, tmp_path, monkeypatch):
+        """백업 성공 시 showinfo를 1회 호출하고 showerror는 호출하지 않아야 한다."""
+        path = tmp_path / "brain.json"
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(main, "DATA_FILE", str(path))
+        with mock.patch("tkinter.messagebox.showinfo") as mock_info:
+            with mock.patch("tkinter.messagebox.showerror") as mock_err:
+                main.BrainApp._backup(mock.MagicMock())
+        assert mock_info.call_count == 1
+        assert mock_err.call_count == 0
+
+
 class TestFetchUrlSummary:
     def test_unreachable_url_returns_error_tuple(self):
         title, body, err = main.fetch_url_summary("http://localhost:0/no-such-page")
@@ -174,3 +251,15 @@ class TestFetchUrlSummary:
         assert body == ""
         assert err is not None
         assert isinstance(err, str)
+
+    def test_http_error_returns_error_tuple(self):
+        """raise_for_status() 회귀: 4xx/5xx 응답은 err 문자열을 반환해야 한다."""
+        import requests as req
+        mock_resp = mock.Mock()
+        mock_resp.raise_for_status.side_effect = req.HTTPError("404 Client Error")
+        with mock.patch("requests.get", return_value=mock_resp):
+            title, body, err = main.fetch_url_summary("https://example.com/not-found")
+        assert title == ""
+        assert body == ""
+        assert err is not None
+        assert "404" in err
