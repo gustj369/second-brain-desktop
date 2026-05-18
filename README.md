@@ -23,24 +23,6 @@
 - 🕸️ 지식 그래프 — 공통 태그로 노트 연결 · 노드 클릭 시 바로 열기
 - 📈 관심사 트래킹 — 월별 태그 빈도 차트 · 🟩 GitHub 스타일 생산성 히트맵
 
-## 🛠 설치 방법
-
-**요구사항**: Python 3.9+ (tested on 3.14.2), Windows
-
-```bash
-# 1. 저장소 클론
-git clone https://github.com/gustj258/second-brain-desktop.git
-cd second-brain-desktop
-
-# 2. 패키지 설치
-pip install -r requirements.txt
-
-# 3. 실행
-python main.py
-```
-
-> **API 키**: [Google AI Studio](https://aistudio.google.com)에서 무료 발급 후 앱 첫 실행 시 입력창에 입력하면 자동 저장됩니다.
-
 ## 📁 파일 구조
 
 ```
@@ -72,6 +54,3 @@ second-brain-desktop/
 Notion, Obsidian 같은 툴이 있지만, 내 사고방식에 맞게 기능을 고르고 조합하는 경험이 달랐습니다.
 이 저장소는 "비개발자도 만들 수 있다"는 증거이자, 비슷한 시도를 하려는 사람들을 위한 참고 예시입니다.
 
-## 📄 License
-
-MIT
