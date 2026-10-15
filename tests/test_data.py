@@ -724,3 +724,68 @@ class TestSingleInstance:
     def test_notify_fails_gracefully_without_running_instance(self, tmp_path, monkeypatch):
         monkeypatch.setattr(main, "INSTANCE_PORT_FILE", str(tmp_path / "none"))
         assert main.notify_running_instance() is False
+
+
+class TestMergeNotes:
+    def _n(self, nid, updated, title=None):
+        return {"id": nid, "title": title or nid, "updated_at": updated}
+
+    def test_disk_only_note_is_added(self):
+        merged, added = main.merge_notes([self._n("a", "1")], [self._n("a", "1"), self._n("b", "2")], set())
+        assert [n["id"] for n in merged] == ["a", "b"] and added == 1
+
+    def test_locally_deleted_note_not_revived(self):
+        merged, added = main.merge_notes([self._n("a", "1")], [self._n("a", "1"), self._n("x", "2")], {"x"})
+        assert [n["id"] for n in merged] == ["a"] and added == 0
+
+    def test_newer_edit_wins(self):
+        local = [self._n("a", "2026-10-15T21:30:00", "로컬")]
+        disk = [self._n("a", "2026-10-15T21:31:00", "디스크")]
+        assert main.merge_notes(local, disk, set())[0][0]["title"] == "디스크"
+        assert main.merge_notes(disk, local, set())[0][0]["title"] == "디스크"
+
+    def test_local_only_note_kept(self):
+        merged, _ = main.merge_notes([self._n("a", "1"), self._n("new", "2")], [self._n("a", "1")], set())
+        assert {n["id"] for n in merged} == {"a", "new"}
+
+
+class TestMergeOnSaveGui:
+    """두 인스턴스(또는 다른 PC)가 같은 파일을 쓰는 상황 재현 — 이번에 노트 2개가 사라진 시나리오."""
+
+    def _write_disk(self, notes):
+        with open(main.DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"notes": notes}, f, ensure_ascii=False)
+
+    def test_save_keeps_notes_written_by_other_instance(self, gui_app):
+        os.makedirs(os.path.dirname(main.DATA_FILE), exist_ok=True)
+        gui_app.new_note(confirm=False)
+        gui_app.title_var.set("이 앱의 노트")
+        assert gui_app.save_note()
+        mine = gui_app.selected_id
+        # 다른 인스턴스가 메모리의 자기 노트 2개로 파일을 저장
+        other = [main._normalize_note({"id": f"other-{i}", "title": f"다른 앱 노트 {i}",
+                                       "updated_at": "2026-10-15T21:29:00"}) for i in range(2)]
+        disk = json.load(open(main.DATA_FILE, encoding="utf-8"))["notes"] + other
+        import time as _t; _t.sleep(0.01)
+        self._write_disk(disk)
+        # 이 앱에서 노트를 하나 더 저장 → 다른 앱의 2개가 지워지면 안 됨
+        gui_app.new_note(confirm=False)
+        gui_app.title_var.set("이 앱의 두 번째 노트")
+        assert gui_app.save_note()
+        saved = {n["id"] for n in json.load(open(main.DATA_FILE, encoding="utf-8"))["notes"]}
+        assert {"other-0", "other-1", mine, gui_app.selected_id} <= saved
+        assert "2개를 합쳤어요" in gui_app.status_label.cget("text")
+
+    def test_deleted_note_stays_deleted_after_merge(self, gui_app):
+        os.makedirs(os.path.dirname(main.DATA_FILE), exist_ok=True)
+        gui_app.new_note(confirm=False)
+        gui_app.title_var.set("지울 노트")
+        assert gui_app.save_note()
+        doomed = gui_app.selected_id
+        disk = json.load(open(main.DATA_FILE, encoding="utf-8"))["notes"]
+        import time as _t; _t.sleep(0.01)
+        self._write_disk(disk + [main._normalize_note({"id": "ext", "title": "외부"})])
+        with mock.patch("main.messagebox.askyesno", return_value=True):
+            gui_app.delete_note()
+        saved = {n["id"] for n in json.load(open(main.DATA_FILE, encoding="utf-8"))["notes"]}
+        assert doomed not in saved and "ext" in saved

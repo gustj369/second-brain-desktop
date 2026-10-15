@@ -103,6 +103,44 @@ def save_data(data: dict) -> None:
         import tkinter.messagebox as _mb
         _mb.showerror("저장 실패", f"데이터를 저장할 수 없습니다.\n\n{e}")
 
+def file_mtime(path: str) -> Optional[int]:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+def read_disk_notes(path: str) -> Optional[list]:
+    """디스크의 노트 목록 — 읽기 실패(손상 등)면 None. 팝업 없이 조용히 읽는다(저장 직전 병합용)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return [_normalize_note(n) for n in json.load(f).get("notes", [])]
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        return None
+
+def merge_notes(local: list, disk: list, deleted_ids: set) -> tuple[list, int]:
+    """앱 메모리의 노트와 디스크의 노트를 합친다. (합친 목록, 디스크에서 새로 가져온 수) 반환.
+
+    다른 인스턴스·다른 PC가 그사이 저장한 노트를 덮어쓰지 않기 위한 규칙:
+    - 디스크에만 있는 노트 → 가져옴 (단, 이 앱에서 삭제한 노트는 되살리지 않음)
+    - 양쪽에 있는 노트 → updated_at이 더 최근인 쪽
+    - 이 앱에만 있는 노트 → 유지 (지우는 것보다 남기는 쪽이 안전)
+    """
+    merged = {n["id"]: n for n in local}
+    order = [n["id"] for n in local]
+    added = 0
+    for d in disk:
+        nid = d.get("id")
+        if not nid or nid in deleted_ids:
+            continue
+        if nid not in merged:
+            merged[nid] = d
+            order.append(nid)
+            added += 1
+        elif d.get("updated_at", "") > merged[nid].get("updated_at", ""):
+            merged[nid] = d
+    return [merged[i] for i in order], added
+
 def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         try:
@@ -1013,6 +1051,8 @@ class BrainApp(tk.Tk):
         config = load_config()
         init_data_location(config)   # DATA_FILE을 데이터 폴더(기본: 문서\SecondBrain)로 설정
         self.data = load_data()
+        self._disk_mtime = file_mtime(DATA_FILE)   # 마지막으로 읽거나 쓴 시점 — 바깥 변경 감지용
+        self._deleted_ids = set()                  # 이 앱에서 삭제한 노트 (병합 시 되살리지 않음)
         auto_backup()
         self.selected_id = None
         self.search_var = tk.StringVar()
@@ -1408,7 +1448,7 @@ class BrainApp(tk.Tk):
         now = datetime.now().isoformat(timespec="seconds")
         note["reviewed_at"] = now
         note["review_count"] = note.get("review_count", 0) + 1
-        save_data(self.data)
+        self._persist()
         self.review_bar.pack_forget()
         self.status_label.configure(text="복습 완료 ✓")
         self.refresh_list()
@@ -2068,6 +2108,28 @@ class BrainApp(tk.Tk):
             return self.save_note()
         return True
 
+    # ── 저장 (바깥 변경 병합) ─────────────────────────
+    def _persist(self):
+        """노트를 저장한다. 그사이 다른 인스턴스·다른 PC가 파일을 바꿨으면 먼저 합친다."""
+        added = 0
+        if file_mtime(DATA_FILE) not in (None, self._disk_mtime):
+            disk_notes = read_disk_notes(DATA_FILE)
+            if disk_notes is None:
+                # 읽을 수 없는 파일은 덮어쓰기 전에 보존
+                try:
+                    shutil.copy2(DATA_FILE, DATA_FILE + ".corrupt." + datetime.now().strftime("%Y%m%d%H%M%S"))
+                except Exception as e:
+                    logging.error(e, exc_info=True)
+            else:
+                self.data["notes"], added = merge_notes(
+                    self.data["notes"], disk_notes, self._deleted_ids)
+        save_data(self.data)
+        self._disk_mtime = file_mtime(DATA_FILE)
+        if added:
+            self.refresh_list()
+            self.status_label.configure(text=f"다른 곳에서 저장된 노트 {added}개를 합쳤어요")
+        return added
+
     # ── 노트 조작 ─────────────────────────────────────
     def new_note(self, confirm: bool = True) -> bool:
         """빈 편집기로 전환. confirm=True면 저장 안 한 변경을 먼저 확인하고, 취소 시 False."""
@@ -2143,8 +2205,9 @@ class BrainApp(tk.Tk):
             self.data["notes"].append(new)
             self.selected_id = new["id"]
 
-        save_data(self.data)
-        self.status_label.configure(text=f"저장됨: {now[:16]}")
+        added = self._persist()
+        merged_note = f"  ·  다른 곳에서 저장된 노트 {added}개를 합쳤어요" if added else ""
+        self.status_label.configure(text=f"저장됨: {now[:16]}{merged_note}")
         self._mark_clean()
         self.refresh_list()
         return True
@@ -2153,8 +2216,9 @@ class BrainApp(tk.Tk):
         if not self.selected_id:
             messagebox.showinfo("알림", "삭제할 노트를 선택하세요."); return
         if not messagebox.askyesno("삭제 확인", "이 노트를 삭제할까요?"): return
+        self._deleted_ids.add(self.selected_id)
         self.data["notes"] = [n for n in self.data["notes"] if n["id"] != self.selected_id]
-        save_data(self.data)
+        self._persist()
         self.new_note(confirm=False)
         self.refresh_list()
 
