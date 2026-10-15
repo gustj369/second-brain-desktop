@@ -4,6 +4,24 @@
 
 ---
 
+## [v9.0] - 2026-10-15
+### Added
+- 💾 **노트 저장 위치 분리 + 자동 백업**: 노트를 앱 폴더가 아닌 `문서\SecondBrain`(Windows에선 OneDrive)에 저장, 앱 시작 시 하루 1회 백업·최근 30일 보관 — PC 포맷 시 노트가 백업과 함께 유실되던 구조 개선
+- 🧭 앱 폴더의 이전 `brain.json`은 처음 실행 시 자동 이전(원본은 `brain.json.migrated`로 보존), `config.json`의 `data_dir`로 위치 변경 가능
+- ⚙️ GitHub Actions CI (Windows, pytest)
+### Fixed
+- 🛡️ **저장하지 않은 내용 유실**: 다른 노트 선택·새 노트·클립보드/아이디어 충돌기 저장·종료 시 저장/버림/취소 확인
+- 🖱️ 노트 카드 위에서 마우스 휠 스크롤이 동작하지 않던 문제
+- 🔍 '비슷한 노트 찾기'가 가장 오래된 30개만 비교하던 문제 → 태그 겹침·최근 수정 순으로 후보 선정
+- 📺 유튜브 자막 실패 시 오류 안내 없이 버튼이 '자막 추출 중...'으로 멈추던 문제
+- 🧵 앱 종료 후 도착한 AI·URL 결과로 백그라운드 오류가 나던 문제, 트레이 스레드의 Tk 변수 접근
+- 💾 OneDrive 동기화 중 일시적 파일 잠금 시 저장 재시도
+### Changed
+- 🤖 **AI SDK 교체**: 지원 종료된 `google-generativeai` → `google-genai`, 기본 모델 `gemini-3.5-flash-lite` (`config.json`의 `gemini_model`로 변경 가능)
+- ⚡ **성능**(노트 3,000개 기준): 노트 클릭 11.6초 → 0.002초, 저장·목록 갱신 4.9초 → 0.36초 — 선택 시 목록 재생성 제거, 검색 200ms 디바운스, 목록은 최근 200개 + '더 보기'
+### Tests
+- 총 **58개 테스트** (실제 BrainApp 창을 띄우는 GUI 시나리오 테스트 포함)
+
 ## [v8.8] - 2026-05-18
 ### Tests
 - ✅ **`_find_non_overlapping_pair()` 단위 테스트**: `TestFindNonOverlappingPair` 클래스 추가 — `mock.MagicMock()`을 `self`로 사용해 Tkinter 없이 검증
