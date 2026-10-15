@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json, uuid, os, threading, re, shutil, random, time, logging
+import json, uuid, os, sys, socket, threading, re, shutil, random, time, logging
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
 from datetime import datetime, date, timedelta
@@ -13,6 +13,9 @@ CONFIG_FILE  = os.path.join(APP_DIR, "config.json")
 LEGACY_DATA_FILE = os.path.join(APP_DIR, "brain.json")
 DATA_FILE    = LEGACY_DATA_FILE
 BACKUP_KEEP_DAYS = 30   # 자동 백업(하루 1개) 보관 개수
+# 중복 실행 방지 — 두 인스턴스가 각자 메모리의 노트로 brain.json을 덮어쓰면 노트가 유실된다
+INSTANCE_MUTEX_NAME = r"Local\SecondBrainDesktop"
+INSTANCE_PORT_FILE  = os.path.join(APP_DIR, ".instance_port")   # 실행 중 인스턴스의 연락 포트
 # 기본 모델 — config.json의 gemini_model로 교체 가능 (gemini-2.5-flash는 신규 키 사용 제한)
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 GEMINI_TIMEOUT_MS = 60_000
@@ -116,6 +119,66 @@ def save_config(config: dict) -> None:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.error(e, exc_info=True)
+
+# ── 중복 실행 방지 ──────────────────────────────────────
+def acquire_single_instance():
+    """첫 인스턴스면 잠금 핸들(프로세스 종료 시 Windows가 자동 해제), 이미 실행 중이면 None.
+
+    Windows 이름 있는 mutex를 사용 — 비정상 종료돼도 잠금이 남지 않는다. Windows 외에서는 검사하지 않는다.
+    """
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    handle = kernel32.CreateMutexW(None, False, INSTANCE_MUTEX_NAME)
+    if ctypes.get_last_error() == 183:   # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return None
+    return handle
+
+def start_instance_listener(on_show: Callable[[], None]) -> Optional[socket.socket]:
+    """나중에 실행된 인스턴스의 'SHOW' 요청을 받는 localhost 소켓 — 포트는 INSTANCE_PORT_FILE에 기록."""
+    try:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))   # 빈 포트 자동 선택, 외부 접속 불가
+        server.listen(1)
+        with open(INSTANCE_PORT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(server.getsockname()[1]))
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        return None
+
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return   # 앱 종료로 소켓이 닫힘
+            with conn:
+                try:
+                    conn.settimeout(2)
+                    if conn.recv(16) == b"SHOW":
+                        conn.sendall(b"OK")
+                        on_show()
+                except Exception as e:
+                    logging.warning("인스턴스 요청 처리 실패: %s", e)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return server
+
+def notify_running_instance() -> bool:
+    """실행 중인 인스턴스에 창을 띄우라고 요청. 응답을 받으면 True."""
+    try:
+        with open(INSTANCE_PORT_FILE, encoding="utf-8") as f:
+            port = int(f.read().strip())
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
+            conn.sendall(b"SHOW")
+            return conn.recv(2) == b"OK"
+    except Exception:
+        return False
 
 # ── 데이터 위치 & 자동 백업 ──────────────────────────────
 def _documents_dir() -> str:
@@ -971,6 +1034,7 @@ class BrainApp(tk.Tk):
         self.refresh_list()
         self.after(600, self._run_briefing)
         self._start_tray()
+        self._instance_server = start_instance_listener(self._show_window)
         self._start_clipboard_monitor()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1064,6 +1128,12 @@ class BrainApp(tk.Tk):
         self._monitor_running = False
         if self.tray_icon:
             self.tray_icon.stop()
+        if self._instance_server is not None:
+            self._instance_server.close()
+            try:
+                os.remove(INSTANCE_PORT_FILE)
+            except OSError:
+                pass
         self.destroy()
 
     # ── 클립보드 캡처 ─────────────────────────────────
@@ -2090,5 +2160,14 @@ class BrainApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    _instance_lock = acquire_single_instance()   # 프로세스가 끝날 때까지 참조 유지
+    if _instance_lock is None:
+        # 이미 실행 중 — 트레이에 숨어 있을 수 있으므로 기존 창을 불러오고 종료
+        if not notify_running_instance():
+            _root = tk.Tk(); _root.withdraw()
+            messagebox.showinfo("세컨 브레인",
+                "세컨 브레인이 이미 실행 중이에요.\n작업 표시줄 오른쪽 트레이 아이콘을 확인해주세요.")
+            _root.destroy()
+        sys.exit(0)
     app = BrainApp()
     app.mainloop()

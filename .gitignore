@@ -34,3 +34,6 @@ venv/
 *.swp
 .DS_Store
 Thumbs.db
+
+# ── 실행 중 인스턴스 연락 포트 ──
+.instance_port

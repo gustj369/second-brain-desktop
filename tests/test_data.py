@@ -498,6 +498,8 @@ def _gui_app_shared(tmp_path_factory):
     mp.setattr(main, "_documents_dir", lambda: str(tmp / "docs"))
     for name in ("_init_api", "_start_tray", "_start_clipboard_monitor", "_run_briefing"):
         mp.setattr(main.BrainApp, name, lambda self: None)
+    # 연락 포트 파일이 저장소 폴더에 생기지 않도록 임시 폴더로 (함수 자체는 교체하지 않음 — 모듈 공유 상태)
+    mp.setattr(main, "INSTANCE_PORT_FILE", str(tmp / ".instance_port"))
     app = main.BrainApp()
     app.withdraw()
     yield app, tmp
@@ -691,3 +693,34 @@ class TestYoutubeErrorCallback:
         for fn in pending:
             fn()
         app._youtube_error.assert_called_once_with("자막 없음")
+
+
+class TestSingleInstance:
+    @pytest.mark.skipif(os.name != "nt", reason="Windows mutex")
+    def test_second_acquire_detects_running_instance(self, monkeypatch):
+        import ctypes, uuid as _uuid
+        monkeypatch.setattr(main, "INSTANCE_MUTEX_NAME", rf"Local\SecondBrainTest-{_uuid.uuid4()}")
+        first = main.acquire_single_instance()
+        try:
+            assert first is not None
+            assert main.acquire_single_instance() is None      # 이미 실행 중
+        finally:
+            ctypes.windll.kernel32.CloseHandle(first)
+        again = main.acquire_single_instance()                 # 첫 인스턴스 종료 후엔 다시 획득 가능
+        assert again is not None
+        ctypes.windll.kernel32.CloseHandle(again)
+
+    def test_show_request_reaches_running_instance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main, "INSTANCE_PORT_FILE", str(tmp_path / ".instance_port"))
+        shown = __import__("threading").Event()
+        server = main.start_instance_listener(shown.set)
+        try:
+            assert server is not None
+            assert main.notify_running_instance() is True
+            assert shown.wait(2)
+        finally:
+            server.close()
+
+    def test_notify_fails_gracefully_without_running_instance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main, "INSTANCE_PORT_FILE", str(tmp_path / "none"))
+        assert main.notify_running_instance() is False
