@@ -441,3 +441,124 @@ class TestRunAiAsync:
 
     def test_default_model_is_not_restricted_legacy(self):
         assert main.GEMINI_MODEL == "gemini-3.5-flash-lite"
+
+
+class TestConfirmLeaveEditor:
+    """저장하지 않은 변경 확인 로직 — 예(저장)/아니요(버림)/취소(계속 편집)."""
+
+    def _app(self, dirty=True, save_ok=True):
+        app = mock.MagicMock()
+        app._has_unsaved_changes.return_value = dirty
+        app.save_note.return_value = save_ok
+        return app
+
+    def test_clean_editor_leaves_without_asking(self):
+        app = self._app(dirty=False)
+        with mock.patch("main.messagebox.askyesnocancel") as ask:
+            assert main.BrainApp._confirm_leave_editor(app) is True
+        ask.assert_not_called()
+
+    @pytest.mark.parametrize("answer,save_ok,expected,saved", [
+        (None, True, False, False),    # 취소 → 머무름
+        (False, True, True, False),    # 아니요 → 저장 없이 이동
+        (True, True, True, True),      # 예 → 저장 후 이동
+        (True, False, False, True),    # 예지만 저장 실패(제목 없음 등) → 머무름
+    ])
+    def test_dirty_editor_answers(self, answer, save_ok, expected, saved):
+        app = self._app(dirty=True, save_ok=save_ok)
+        with mock.patch("main.messagebox.askyesnocancel", return_value=answer):
+            assert main.BrainApp._confirm_leave_editor(app) is expected
+        assert app.save_note.called is saved
+
+    def test_new_note_cancelled_keeps_current_note(self):
+        app = mock.MagicMock()
+        app.selected_id = "keep-me"
+        app._confirm_leave_editor.return_value = False
+        assert main.BrainApp.new_note(app) is False
+        assert app.selected_id == "keep-me"
+        app.title_var.set.assert_not_called()
+
+
+@pytest.fixture(scope="module")
+def _gui_app_shared(tmp_path_factory):
+    """트레이·클립보드·API 키 창을 끈 실제 BrainApp — 모듈에서 1개만 생성.
+
+    Windows venv에서 Tk 인스턴스를 반복 생성하면 'Can't find a usable tk.tcl'이
+    간헐적으로 나므로 하나를 공유한다. 화면이 없는 환경에서는 skip.
+    """
+    import tkinter as tk
+    try:
+        probe = tk.Tk(); probe.destroy()
+    except tk.TclError as e:
+        pytest.skip(f"디스플레이 없음: {e}")
+    tmp = tmp_path_factory.mktemp("gui")
+    mp = pytest.MonkeyPatch()
+    mp.setattr(main, "CONFIG_FILE", str(tmp / "config.json"))
+    mp.setattr(main, "LEGACY_DATA_FILE", str(tmp / "legacy.json"))
+    mp.setattr(main, "_documents_dir", lambda: str(tmp / "docs"))
+    for name in ("_init_api", "_start_tray", "_start_clipboard_monitor", "_run_briefing"):
+        mp.setattr(main.BrainApp, name, lambda self: None)
+    app = main.BrainApp()
+    app.withdraw()
+    yield app, tmp
+    app.destroy()
+    mp.undo()
+
+
+@pytest.fixture
+def gui_app(_gui_app_shared, monkeypatch):
+    app, tmp = _gui_app_shared
+    # 공유 앱의 DATA_FILE이 다른 테스트의 monkeypatch에 영향받지 않도록 테스트마다 고정
+    monkeypatch.setattr(main, "DATA_FILE", str(tmp / "docs" / "SecondBrain" / "brain.json"))
+    app.data = {"notes": []}
+    app.new_note(confirm=False)
+    return app
+
+
+class TestUnsavedChangesGui:
+    def _add_note(self, app, title, content=""):
+        app.new_note(confirm=False)
+        app.title_var.set(title)
+        app.content_box.insert("1.0", content)
+        assert app.save_note() is True
+        return app.selected_id
+
+    def test_switching_note_with_edits_asks_and_cancel_keeps_text(self, gui_app):
+        first = self._add_note(gui_app, "첫 노트", "원래 내용")
+        second = self._add_note(gui_app, "둘째 노트")
+        gui_app.select_note(first)
+        gui_app.content_box.insert("end", " + 고친 내용")
+        with mock.patch("main.messagebox.askyesnocancel", return_value=None) as ask:
+            gui_app.select_note(second)
+        ask.assert_called_once()
+        assert gui_app.selected_id == first
+        assert "고친 내용" in gui_app.content_box.get("1.0", "end")
+
+    def test_answer_yes_saves_before_switching(self, gui_app):
+        first = self._add_note(gui_app, "첫 노트", "원래")
+        second = self._add_note(gui_app, "둘째 노트")
+        gui_app.select_note(first)
+        gui_app.content_box.insert("end", " 추가")
+        with mock.patch("main.messagebox.askyesnocancel", return_value=True):
+            gui_app.select_note(second)
+        assert gui_app.selected_id == second
+        saved = next(n for n in gui_app.data["notes"] if n["id"] == first)
+        assert saved["content"] == "원래 추가"
+
+    def test_no_prompt_when_nothing_changed(self, gui_app):
+        first = self._add_note(gui_app, "첫 노트")
+        second = self._add_note(gui_app, "둘째 노트")
+        with mock.patch("main.messagebox.askyesnocancel") as ask:
+            gui_app.select_note(first)
+            gui_app.select_note(second)
+            gui_app.new_note()
+        ask.assert_not_called()
+
+    def test_delete_does_not_prompt(self, gui_app):
+        self._add_note(gui_app, "지울 노트")
+        gui_app.content_box.insert("end", "편집 중")
+        with mock.patch("main.messagebox.askyesno", return_value=True), \
+             mock.patch("main.messagebox.askyesnocancel") as ask:
+            gui_app.delete_note()
+        ask.assert_not_called()
+        assert gui_app.data["notes"] == []

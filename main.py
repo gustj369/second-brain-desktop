@@ -430,7 +430,8 @@ class IdeaColliderDialog(tk.Toplevel):
 
     def _save_idea(self):
         title = f"💥 {self._note_a['title']} × {self._note_b['title']}"
-        self._parent_app.new_note()
+        if not self._parent_app.new_note():
+            return   # 편집 중인 노트를 계속 편집하기로 선택 — 결과 창은 유지
         self._parent_app.title_var.set(title[:80])
         self._parent_app.tags_var.set("아이디어충돌, AI생성")
         self._parent_app.content_box.delete("1.0", "end")
@@ -940,6 +941,7 @@ class BrainApp(tk.Tk):
         self.tray_icon = None
 
         self._build_ui()
+        self._mark_clean()
         self._init_api()
         self.refresh_list()
         self.after(600, self._run_briefing)
@@ -1025,10 +1027,18 @@ class BrainApp(tk.Tk):
             self._quit_app()
 
     def _quit_app(self, icon=None, item=None):
+        # 트레이 메뉴(별도 스레드)에서도 호출되므로 확인과 종료는 메인 스레드에서 처리
+        self.after(0, self._quit_on_main_thread)
+
+    def _quit_on_main_thread(self):
+        if self._has_unsaved_changes():
+            self.deiconify(); self.lift()   # 트레이로 숨겨진 상태면 확인 창을 보이게
+            if not self._confirm_leave_editor():
+                return
         self._monitor_running = False
         if self.tray_icon:
             self.tray_icon.stop()
-        self.after(0, self.destroy)
+        self.destroy()
 
     # ── 클립보드 캡처 ─────────────────────────────────
     def _toggle_clipboard_setting(self):
@@ -1114,13 +1124,14 @@ class BrainApp(tk.Tk):
         self._show_window()
         first_line = (text.strip().splitlines() or [""])[0]
         auto_title = (first_line[:50].rsplit(" ", 1)[0] or first_line[:50]).strip()
-        self.after(100, lambda: (
-            self.new_note(),
-            self.title_var.set(auto_title),
-            self.content_box.delete("1.0", "end"),
-            self.content_box.insert("1.0", text),
+        def fill():
+            if not self.new_note():
+                return   # 편집 중인 노트를 계속 편집하기로 선택
+            self.title_var.set(auto_title)
+            self.content_box.delete("1.0", "end")
+            self.content_box.insert("1.0", text)
             self.status_label.configure(text="클립보드에서 가져옴")
-        ))
+        self.after(100, fill)
 
     # ── 일일 브리핑 ──────────────────────────────────
     def _run_briefing(self):
@@ -1870,8 +1881,41 @@ class BrainApp(tk.Tk):
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
 
+    # ── 저장하지 않은 변경 감지 ───────────────────────
+    def _editor_state(self) -> tuple:
+        """편집기의 현재 내용 — save_note()가 저장하는 값과 같은 기준으로 정규화."""
+        ntype = self.note_type.get()
+        tags = tuple(t.strip() for t in self.tags_var.get().split(",") if t.strip())
+        url = self.url_var.get().strip() if ntype == "link" else ""
+        return (ntype, url, self.title_var.get().strip(), tags,
+                self.content_box.get("1.0", "end").strip())
+
+    def _mark_clean(self):
+        """노트를 불러오거나 저장한 직후 상태를 기준점으로 기록."""
+        self._clean_state = self._editor_state()
+
+    def _has_unsaved_changes(self) -> bool:
+        return self._editor_state() != getattr(self, "_clean_state", None)
+
+    def _confirm_leave_editor(self) -> bool:
+        """편집 중인 내용을 떠나도 되면 True. 저장 안 한 변경이 있으면 저장/버림/취소를 묻는다."""
+        if not self._has_unsaved_changes():
+            return True
+        answer = messagebox.askyesnocancel(
+            "저장하지 않은 변경사항",
+            "편집 중인 노트에 저장하지 않은 내용이 있어요.\n\n"
+            "예: 저장하고 이동    아니요: 저장하지 않고 이동    취소: 계속 편집")
+        if answer is None:
+            return False
+        if answer:
+            return self.save_note()
+        return True
+
     # ── 노트 조작 ─────────────────────────────────────
-    def new_note(self):
+    def new_note(self, confirm: bool = True) -> bool:
+        """빈 편집기로 전환. confirm=True면 저장 안 한 변경을 먼저 확인하고, 취소 시 False."""
+        if confirm and not self._confirm_leave_editor():
+            return False
         self.selected_id = None
         self.note_type.set("note")
         self._toggle_link_row()
@@ -1882,13 +1926,17 @@ class BrainApp(tk.Tk):
         self._hide_ai_result()
         self.review_bar.pack_forget()
         self.status_label.configure(text="새 노트")
+        self._mark_clean()
+        return True
 
     def select_note(self, note_id):
-        self.selected_id = note_id
         note = next((n for n in self.data["notes"] if n["id"] == note_id), None)
         if note is None:
             logging.error("select_note: note_id=%s not found", note_id)
             return
+        if not self._confirm_leave_editor():
+            return
+        self.selected_id = note_id
         self.note_type.set(note.get("type", "note"))
         self._toggle_link_row()
         self.url_var.set(note.get("url", ""))
@@ -1909,6 +1957,7 @@ class BrainApp(tk.Tk):
             self.review_bar.pack_forget()
 
         self.status_label.configure(text=f"수정됨: {note['updated_at'][:16]}")
+        self._mark_clean()
         self.refresh_list()
 
     def save_note(self):
@@ -1920,13 +1969,13 @@ class BrainApp(tk.Tk):
         now     = datetime.now().isoformat(timespec="seconds")
 
         if not title:
-            messagebox.showwarning("알림", "제목을 입력하세요."); return
+            messagebox.showwarning("알림", "제목을 입력하세요."); return False
 
         if self.selected_id:
             note = next((n for n in self.data["notes"] if n["id"] == self.selected_id), None)
             if note is None:
                 logging.error("save_note: note_id=%s not found", self.selected_id)
-                return
+                return False
             note.update(title=title, content=content, tags=tags,
                         type=ntype, url=url, updated_at=now)
         else:
@@ -1939,7 +1988,9 @@ class BrainApp(tk.Tk):
 
         save_data(self.data)
         self.status_label.configure(text=f"저장됨: {now[:16]}")
+        self._mark_clean()
         self.refresh_list()
+        return True
 
     def delete_note(self):
         if not self.selected_id:
@@ -1947,7 +1998,7 @@ class BrainApp(tk.Tk):
         if not messagebox.askyesno("삭제 확인", "이 노트를 삭제할까요?"): return
         self.data["notes"] = [n for n in self.data["notes"] if n["id"] != self.selected_id]
         save_data(self.data)
-        self.new_note()
+        self.new_note(confirm=False)
         self.refresh_list()
 
 
