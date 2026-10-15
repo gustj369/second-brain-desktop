@@ -5,7 +5,7 @@
 - 개인 지식 관리 도구를 직접 설계·기획하는 사람
 
 ## 현재 작업 중인 프로젝트
-- **Second Brain Desktop** (`C:\Users\gustj\Brain\`)
+- **Second Brain Desktop** (`C:\dev\second-brain-desktop`, 노트 데이터: `문서\SecondBrain`)
   - Python + Tkinter 기반 개인 노트·지식 관리 데스크탑 앱
   - Gemini API 연동 (aistudio.google.com 무료 티어)
   - GitHub: https://github.com/gustj369/second-brain-desktop
