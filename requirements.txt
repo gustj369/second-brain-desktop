@@ -3,7 +3,7 @@ requests>=2.31.0        # tested: 2.32.5
 beautifulsoup4>=4.12.0  # tested: 4.14.3
 
 # Gemini AI
-google-generativeai>=0.8.0  # tested: 0.8.6
+google-genai>=1.0.0  # tested: 2.31.0 (google-generativeai는 지원 종료)
 
 # 시스템 트레이 & 클립보드 캡처 (Step 7) — Windows/macOS only
 pystray>=0.19.0              # tested: 0.19.5  (Linux 미지원)

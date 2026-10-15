@@ -13,7 +13,10 @@ CONFIG_FILE  = os.path.join(APP_DIR, "config.json")
 LEGACY_DATA_FILE = os.path.join(APP_DIR, "brain.json")
 DATA_FILE    = LEGACY_DATA_FILE
 BACKUP_KEEP_DAYS = 30   # 자동 백업(하루 1개) 보관 개수
-GEMINI_MODEL = "gemini-2.5-flash"
+# 기본 모델 — config.json의 gemini_model로 교체 가능 (gemini-2.5-flash는 신규 키 사용 제한)
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GEMINI_TIMEOUT_MS = 60_000
+_ai_client = None   # google.genai.Client — _setup_gemini()에서 생성
 LOG_FILE     = os.path.join(APP_DIR, "brain.log")
 _log_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")
 _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(funcName)s: %(message)s"))
@@ -217,18 +220,29 @@ def _run_ai_async(
     on_success: Callable[[str], None],
     on_error: Callable[[str], None],
 ) -> None:
-    """모듈 레벨 AI 공통 헬퍼: genai 모델 생성 → 백그라운드 스레드 → after(0, 콜백).
+    """모듈 레벨 AI 공통 헬퍼: Gemini 호출 → 백그라운드 스레드 → after(0, 콜백).
 
     BrainApp._call_ai_async 와 독립 다이얼로그(BriefingDialog, IdeaColliderDialog)에서
     공용으로 사용한다. parent는 after() 스케줄링에만 사용된다.
     """
     def worker():
         try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(
-                GEMINI_MODEL, system_instruction=system_instruction)
-            response = model.generate_content(prompt)
-            parent.after(0, lambda: on_success(response.text))
+            if _ai_client is None:
+                raise RuntimeError("Gemini API 키가 설정되지 않았습니다.")
+            from google.genai import types
+            response = _ai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),  # 단위 ms
+                ),
+            )
+            text = response.text
+            if not text:
+                # 안전 필터 차단 등으로 본문이 비면 빈 결과 대신 오류로 안내
+                raise RuntimeError("AI가 빈 응답을 반환했습니다. 내용을 바꿔 다시 시도해주세요.")
+            parent.after(0, lambda: on_success(text))
         except Exception as e:
             logging.error(e, exc_info=True)
             parent.after(0, lambda err=str(e): on_error(err))
@@ -947,13 +961,15 @@ class BrainApp(tk.Tk):
             self._setup_gemini(api_key)
 
     def _setup_gemini(self, api_key):
+        global _ai_client, GEMINI_MODEL
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            self.api_client = genai
+            from google import genai
+            _ai_client = genai.Client(api_key=api_key)
+            self.api_client = _ai_client
+            GEMINI_MODEL = load_config().get("gemini_model") or GEMINI_MODEL
         except ImportError:
             messagebox.showerror("패키지 없음",
-                "pip install google-generativeai 을 실행한 뒤 앱을 재시작하세요.")
+                "pip install google-genai 을 실행한 뒤 앱을 재시작하세요.")
 
     def _reset_api_key(self):
         dlg = ApiKeyDialog(self)

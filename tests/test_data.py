@@ -294,7 +294,7 @@ class TestFetchUrlSummary:
 
 
 class TestDataLocation:
-    """init_data_location() — 노트를 앱 폴더가 아닌 데이터 폴더(기본: 문서\SecondBrain)에 저장."""
+    """init_data_location() — 노트를 앱 폴더가 아닌 데이터 폴더(기본: 문서 아래 SecondBrain 폴더)에 저장."""
 
     def _patch_paths(self, tmp_path, monkeypatch):
         app_dir = tmp_path / "app"
@@ -394,3 +394,50 @@ class TestSaveRetry:
         assert err.call_count == 0
         assert calls["n"] == 3
         assert "ok" in (tmp_path / "brain.json").read_text(encoding="utf-8")
+
+
+class TestRunAiAsync:
+    """_run_ai_async() — google.genai 클라이언트 호출을 동기 실행으로 검증."""
+
+    class _ImmediateThread:
+        def __init__(self, target, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def _run(self, monkeypatch, client):
+        monkeypatch.setattr(main, "_ai_client", client)
+        monkeypatch.setattr(main.threading, "Thread", self._ImmediateThread)
+        parent = mock.MagicMock()
+        parent.after.side_effect = lambda ms, fn: fn()
+        ok, err = mock.Mock(), mock.Mock()
+        main._run_ai_async(parent, "시스템 지시", "질문", on_success=ok, on_error=err)
+        return ok, err
+
+    def test_success_passes_text_with_model_and_ms_timeout(self, monkeypatch):
+        client = mock.MagicMock()
+        client.models.generate_content.return_value.text = "답변"
+        ok, err = self._run(monkeypatch, client)
+        ok.assert_called_once_with("답변")
+        err.assert_not_called()
+        kwargs = client.models.generate_content.call_args.kwargs
+        assert kwargs["model"] == main.GEMINI_MODEL
+        assert kwargs["contents"] == "질문"
+        assert kwargs["config"].system_instruction == "시스템 지시"
+        assert kwargs["config"].http_options.timeout == 60_000   # 단위 ms
+
+    def test_empty_response_reported_as_error(self, monkeypatch):
+        client = mock.MagicMock()
+        client.models.generate_content.return_value.text = None
+        ok, err = self._run(monkeypatch, client)
+        ok.assert_not_called()
+        assert "빈 응답" in err.call_args[0][0]
+
+    def test_without_client_reports_error(self, monkeypatch):
+        ok, err = self._run(monkeypatch, None)
+        ok.assert_not_called()
+        assert "API 키" in err.call_args[0][0]
+
+    def test_default_model_is_not_restricted_legacy(self):
+        assert main.GEMINI_MODEL == "gemini-3.5-flash-lite"
