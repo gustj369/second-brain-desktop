@@ -215,6 +215,16 @@ def _fetch_youtube_transcript(vid: str) -> str:
         fetched = next(iter(transcript_list)).fetch()
     return " ".join(s["text"] for s in fetched.to_raw_data())[:5000]
 
+def _post_to_ui(widget, callback: Callable[[], None]) -> None:
+    """백그라운드 스레드의 결과를 Tk 메인 루프로 넘긴다.
+
+    앱을 닫은 뒤 도착한 결과(예: 종료 직후 AI 응답)는 after() 호출이 실패하므로 조용히 버린다.
+    """
+    try:
+        widget.after(0, callback)
+    except (RuntimeError, tk.TclError):
+        pass
+
 def _similar_candidates(notes: list, exclude_id: Optional[str],
                         current_tags: list, limit: int) -> list:
     """'비슷한 노트 찾기'에 보낼 후보 — 현재 노트와 겹치는 태그 수, 같으면 최근 수정 순.
@@ -255,10 +265,10 @@ def _run_ai_async(
             if not text:
                 # 안전 필터 차단 등으로 본문이 비면 빈 결과 대신 오류로 안내
                 raise RuntimeError("AI가 빈 응답을 반환했습니다. 내용을 바꿔 다시 시도해주세요.")
-            parent.after(0, lambda: on_success(text))
+            _post_to_ui(parent, lambda: on_success(text))
         except Exception as e:
             logging.error(e, exc_info=True)
-            parent.after(0, lambda err=str(e): on_error(err))
+            _post_to_ui(parent, lambda err=str(e): on_error(err))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -1021,8 +1031,9 @@ class BrainApp(tk.Tk):
                 pystray.MenuItem("세컨 브레인 열기", self._show_window),
                 pystray.MenuItem(
                     "클립보드 캡처",
-                    lambda icon, item: self.after(0, self._toggle_clipboard_setting),
-                    checked=lambda item: self.clipboard_enabled.get()
+                    lambda icon, item: _post_to_ui(self, self._toggle_clipboard_setting),
+                    # 트레이 스레드에서 호출 — Tk 변수 대신 동기화된 plain bool 사용
+                    checked=lambda item: self._clipboard_active
                 ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("종료", self._quit_app),
@@ -1033,7 +1044,7 @@ class BrainApp(tk.Tk):
             pass
 
     def _show_window(self, icon=None, item=None):
-        self.after(0, lambda: (self.deiconify(), self.lift(), self.focus_force()))
+        _post_to_ui(self, lambda: (self.deiconify(), self.lift(), self.focus_force()))
 
     def _on_close(self):
         if self.tray_icon:
@@ -1043,7 +1054,7 @@ class BrainApp(tk.Tk):
 
     def _quit_app(self, icon=None, item=None):
         # 트레이 메뉴(별도 스레드)에서도 호출되므로 확인과 종료는 메인 스레드에서 처리
-        self.after(0, self._quit_on_main_thread)
+        _post_to_ui(self, self._quit_on_main_thread)
 
     def _quit_on_main_thread(self):
         if self._has_unsaved_changes():
@@ -1083,7 +1094,7 @@ class BrainApp(tk.Tk):
                     if current != self._last_clipboard:
                         # Tkinter 변수 대신 plain bool 사용 — 백그라운드 스레드 안전
                         if self._clipboard_active and len(current.strip()) >= CLIPBOARD_MIN_LEN:
-                            self.after(0, lambda t=current: self._show_clipboard_toast(t))
+                            _post_to_ui(self, lambda t=current: self._show_clipboard_toast(t))
                         self._last_clipboard = current
                 except Exception as e:
                     logging.error(e, exc_info=True)
@@ -1264,10 +1275,10 @@ class BrainApp(tk.Tk):
             """1단계: 자막 추출 (네트워크) — 성공 시 메인 스레드에서 AI 요약 예약."""
             try:
                 transcript = _fetch_youtube_transcript(vid)
-                self.after(0, lambda t=transcript: self._youtube_start_ai(t))
+                _post_to_ui(self, lambda t=transcript: self._youtube_start_ai(t))
             except Exception as e:
                 logging.error(e, exc_info=True)
-                self.after(0, lambda: self._youtube_error(str(e)))
+                _post_to_ui(self, lambda err=str(e): self._youtube_error(err))
 
         threading.Thread(target=fetch_transcript, daemon=True).start()
 
@@ -1634,7 +1645,7 @@ class BrainApp(tk.Tk):
         # fetch_url_summary()는 네트워크 요청 — 반드시 백그라운드 스레드에서 실행
         def worker():
             result = fetch_url_summary(url)
-            self.after(0, lambda: self._apply_summary(*result))
+            _post_to_ui(self, lambda: self._apply_summary(*result))
         threading.Thread(target=worker, daemon=True).start()
 
     def _apply_summary(self, title, body, err):

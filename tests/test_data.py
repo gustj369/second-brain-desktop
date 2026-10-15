@@ -658,3 +658,36 @@ class TestSelectionRepaintGui:
         rebuild.assert_not_called()
         assert gui_app._cards["n2"][0].cget("bg") == main.SEL
         assert gui_app._cards["n1"][0].cget("bg") == main.BG2
+
+
+class TestPostToUi:
+    def test_forwards_to_after(self):
+        widget = mock.MagicMock()
+        cb = mock.Mock()
+        main._post_to_ui(widget, cb)
+        widget.after.assert_called_once_with(0, cb)
+
+    @pytest.mark.parametrize("exc", [RuntimeError("main thread is not in main loop"),
+                                     __import__("tkinter").TclError("application has been destroyed")])
+    def test_ignores_closed_app(self, exc):
+        widget = mock.MagicMock()
+        widget.after.side_effect = exc
+        main._post_to_ui(widget, mock.Mock())   # 예외가 백그라운드 스레드로 새지 않아야 함
+
+
+class TestYoutubeErrorCallback:
+    def test_error_message_delivered_after_except_block(self, monkeypatch):
+        """except 변수 e를 지연 lambda에서 참조해 NameError가 나던 문제 회귀 — 오류 안내가 전달돼야 한다."""
+        app = mock.MagicMock()
+        app._extract_youtube_id.return_value = "dQw4w9WgXcQ"
+        app._check_api.return_value = True
+        monkeypatch.setattr(main, "_fetch_youtube_transcript",
+                            mock.Mock(side_effect=RuntimeError("자막 없음")))
+        monkeypatch.setattr(main.threading, "Thread", TestRunAiAsync._ImmediateThread)
+        # 실제 Tk처럼 콜백을 나중에(except 블록이 끝난 뒤) 실행해야 버그가 재현된다
+        pending = []
+        app.after.side_effect = lambda ms, fn: pending.append(fn)
+        main.BrainApp._youtube_summary(app)
+        for fn in pending:
+            fn()
+        app._youtube_error.assert_called_once_with("자막 없음")
