@@ -39,6 +39,16 @@ second-brain-desktop/
 ```
 
 노트 저장 위치는 `config.json`의 `data_dir`로 바꿀 수 있습니다.
+
+## ▶️ 실행
+
+```bash
+.venv\Scripts\pythonw.exe main.py          # 창과 함께 실행 (콘솔 창 없음)
+.venv\Scripts\pythonw.exe main.py --tray   # 트레이에 숨긴 채 실행 (PC 시작 시 자동 실행용)
+```
+
+- 이미 실행 중이면 새로 뜨지 않고 기존 창을 앞으로 불러옵니다.
+- 창의 X는 트레이로 숨기기, 완전 종료는 트레이 아이콘 → **종료**.
 이전 버전처럼 앱 폴더에 `brain.json`이 있으면 처음 실행할 때 데이터 폴더로 옮기고, 원본은 `brain.json.migrated`로 남깁니다.
 
 ## 🗺 로드맵

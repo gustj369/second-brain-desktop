@@ -1041,7 +1041,7 @@ class InterestWindow(tk.Toplevel):
 
 # ── 앱 ───────────────────────────────────────────────
 class BrainApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, start_in_tray: bool = False):
         super().__init__()
         self.title("세컨 브레인")
         self.geometry("1200x820")
@@ -1067,6 +1067,7 @@ class BrainApp(tk.Tk):
         self._active_toast = None
         self._monitor_running = True
         self.tray_icon = None
+        self._briefing_pending = False   # 트레이로 시작해 창이 숨어 있는 동안 미뤄둔 일일 브리핑
 
         self._build_ui()
         self._mark_clean()
@@ -1077,6 +1078,10 @@ class BrainApp(tk.Tk):
         self._instance_server = start_instance_listener(self._show_window)
         self._start_clipboard_monitor()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # PC 시작 시 자동 실행(--tray): 창 없이 트레이에서 대기.
+        # 트레이 아이콘이 없으면 창을 숨기지 않음 — 숨기면 앱을 열 방법이 없어진다
+        if start_in_tray and self.tray_icon:
+            self.withdraw()
 
     # ── API ──────────────────────────────────────────
     def _init_api(self):
@@ -1148,7 +1153,13 @@ class BrainApp(tk.Tk):
             pass
 
     def _show_window(self, icon=None, item=None):
-        _post_to_ui(self, lambda: (self.deiconify(), self.lift(), self.focus_force()))
+        _post_to_ui(self, self._bring_to_front)
+
+    def _bring_to_front(self):
+        self.deiconify(); self.lift(); self.focus_force()
+        if self._briefing_pending:
+            self._briefing_pending = False
+            self.after(300, self._run_briefing)
 
     def _on_close(self):
         if self.tray_icon:
@@ -1271,6 +1282,10 @@ class BrainApp(tk.Tk):
 
     # ── 일일 브리핑 ──────────────────────────────────
     def _run_briefing(self):
+        if self.state() == "withdrawn":
+            # 창이 숨은 상태에서 모달 브리핑을 띄우면 보이지 않는 창이 앱을 붙잡으므로 처음 창을 열 때로 미룸
+            self._briefing_pending = True
+            return
         if not self.api_client or len(self.data["notes"]) < 10:
             return
         config = load_config()
@@ -2233,5 +2248,5 @@ if __name__ == "__main__":
                 "세컨 브레인이 이미 실행 중이에요.\n작업 표시줄 오른쪽 트레이 아이콘을 확인해주세요.")
             _root.destroy()
         sys.exit(0)
-    app = BrainApp()
+    app = BrainApp(start_in_tray="--tray" in sys.argv[1:])
     app.mainloop()

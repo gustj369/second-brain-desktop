@@ -496,11 +496,14 @@ def _gui_app_shared(tmp_path_factory):
     mp.setattr(main, "CONFIG_FILE", str(tmp / "config.json"))
     mp.setattr(main, "LEGACY_DATA_FILE", str(tmp / "legacy.json"))
     mp.setattr(main, "_documents_dir", lambda: str(tmp / "docs"))
-    for name in ("_init_api", "_start_tray", "_start_clipboard_monitor", "_run_briefing"):
-        mp.setattr(main.BrainApp, name, lambda self: None)
     # 연락 포트 파일이 저장소 폴더에 생기지 않도록 임시 폴더로 (함수 자체는 교체하지 않음 — 모듈 공유 상태)
     mp.setattr(main, "INSTANCE_PORT_FILE", str(tmp / ".instance_port"))
-    app = main.BrainApp()
+    # 트레이·클립보드·API 키 창·브리핑은 앱 생성 순간에만 끔 — 클래스 메서드를 모듈 내내 바꿔두면
+    # 같은 메서드를 직접 검증하는 다른 테스트에 영향을 준다
+    with pytest.MonkeyPatch.context() as construct:
+        for name in ("_init_api", "_start_tray", "_start_clipboard_monitor", "_run_briefing"):
+            construct.setattr(main.BrainApp, name, lambda self: None)
+        app = main.BrainApp()
     app.withdraw()
     yield app, tmp
     app.destroy()
@@ -789,3 +792,28 @@ class TestMergeOnSaveGui:
             gui_app.delete_note()
         saved = {n["id"] for n in json.load(open(main.DATA_FILE, encoding="utf-8"))["notes"]}
         assert doomed not in saved and "ext" in saved
+
+
+class TestTrayStartBriefing:
+    def test_briefing_deferred_while_hidden(self):
+        app = mock.MagicMock()
+        app.state.return_value = "withdrawn"
+        app._briefing_pending = False
+        with mock.patch("main.BriefingDialog") as dlg:
+            main.BrainApp._run_briefing(app)
+        assert app._briefing_pending is True
+        dlg.assert_not_called()
+
+    def test_deferred_briefing_runs_when_window_opened(self):
+        app = mock.MagicMock()
+        app._briefing_pending = True
+        main.BrainApp._bring_to_front(app)
+        app.deiconify.assert_called_once()
+        app.after.assert_called_once_with(300, app._run_briefing)
+        assert app._briefing_pending is False
+
+    def test_no_briefing_scheduled_when_nothing_pending(self):
+        app = mock.MagicMock()
+        app._briefing_pending = False
+        main.BrainApp._bring_to_front(app)
+        app.after.assert_not_called()
