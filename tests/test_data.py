@@ -291,3 +291,106 @@ class TestFetchUrlSummary:
         assert body == ""
         assert err is not None
         assert "404" in err
+
+
+class TestDataLocation:
+    """init_data_location() — 노트를 앱 폴더가 아닌 데이터 폴더(기본: 문서\SecondBrain)에 저장."""
+
+    def _patch_paths(self, tmp_path, monkeypatch):
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        monkeypatch.setattr(main, "LEGACY_DATA_FILE", str(app_dir / "brain.json"))
+        monkeypatch.setattr(main, "CONFIG_FILE", str(app_dir / "config.json"))
+        monkeypatch.setattr(main, "DATA_FILE", str(app_dir / "brain.json"))
+        monkeypatch.setattr(main, "_documents_dir", lambda: str(tmp_path / "docs"))
+        return app_dir
+
+    def test_default_location_is_documents_secondbrain(self, tmp_path, monkeypatch):
+        self._patch_paths(tmp_path, monkeypatch)
+        config = {}
+        data_dir = main.init_data_location(config)
+        assert data_dir == str(tmp_path / "docs" / "SecondBrain")
+        assert main.DATA_FILE == os.path.join(data_dir, "brain.json")
+        assert config["data_dir"] == data_dir           # config에 기록
+        assert main.load_config()["data_dir"] == data_dir
+
+    def test_custom_data_dir_from_config(self, tmp_path, monkeypatch):
+        self._patch_paths(tmp_path, monkeypatch)
+        custom = tmp_path / "my-notes"
+        main.init_data_location({"data_dir": str(custom)})
+        assert main.DATA_FILE == str(custom / "brain.json")
+
+    def test_legacy_file_migrated_and_original_kept(self, tmp_path, monkeypatch):
+        app_dir = self._patch_paths(tmp_path, monkeypatch)
+        legacy = app_dir / "brain.json"
+        legacy.write_text('{"notes": [{"title": "옛 노트"}]}', encoding="utf-8")
+        main.init_data_location({})
+        assert "옛 노트" in open(main.DATA_FILE, encoding="utf-8").read()
+        assert not legacy.exists()
+        assert (app_dir / "brain.json.migrated").exists()   # 원본은 지우지 않고 보존
+
+    def test_existing_data_not_overwritten_by_legacy(self, tmp_path, monkeypatch):
+        app_dir = self._patch_paths(tmp_path, monkeypatch)
+        (app_dir / "brain.json").write_text('{"notes": [{"title": "옛"}]}', encoding="utf-8")
+        new_dir = tmp_path / "docs" / "SecondBrain"
+        new_dir.mkdir(parents=True)
+        (new_dir / "brain.json").write_text('{"notes": [{"title": "새"}]}', encoding="utf-8")
+        main.init_data_location({})
+        assert '"새"' in (new_dir / "brain.json").read_text(encoding="utf-8")
+        assert (app_dir / "brain.json").exists()            # 판단이 애매하면 손대지 않음
+
+
+class TestAutoBackup:
+    def _setup(self, tmp_path, monkeypatch):
+        data = tmp_path / "brain.json"
+        data.write_text('{"notes": []}', encoding="utf-8")
+        monkeypatch.setattr(main, "DATA_FILE", str(data))
+        return tmp_path / "backups"
+
+    def test_creates_one_backup_per_day(self, tmp_path, monkeypatch):
+        folder = self._setup(tmp_path, monkeypatch)
+        from datetime import date
+        first = main.auto_backup(today=date(2026, 10, 15))
+        again = main.auto_backup(today=date(2026, 10, 15))
+        assert first == again == str(folder / "brain_20261015.json")
+        assert len(os.listdir(folder)) == 1
+
+    def test_keeps_only_recent_days_and_manual_backups(self, tmp_path, monkeypatch):
+        folder = self._setup(tmp_path, monkeypatch)
+        folder.mkdir()
+        from datetime import date, timedelta
+        start = date(2026, 1, 1)
+        for i in range(main.BACKUP_KEEP_DAYS + 5):
+            (folder / f"brain_{start + timedelta(days=i):%Y%m%d}.json").write_text("{}")
+        (folder / "brain_backup_20250101_000000.json").write_text("{}")   # 수동 백업
+        main.auto_backup(today=start + timedelta(days=main.BACKUP_KEEP_DAYS + 5))
+        daily = [f for f in os.listdir(folder) if f.startswith("brain_2")]
+        assert len(daily) == main.BACKUP_KEEP_DAYS
+        assert "brain_20260101.json" not in daily                    # 가장 오래된 것부터 정리
+        assert (folder / "brain_backup_20250101_000000.json").exists()  # 수동 백업은 유지
+
+    def test_no_data_file_no_backup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main, "DATA_FILE", str(tmp_path / "none.json"))
+        assert main.auto_backup() is None
+
+
+class TestSaveRetry:
+    def test_retries_when_file_temporarily_locked(self, tmp_path, monkeypatch):
+        """OneDrive 동기화 중 PermissionError가 잠깐 나도 재시도로 저장에 성공해야 한다."""
+        monkeypatch.setattr(main, "DATA_FILE", str(tmp_path / "brain.json"))
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("locked by sync")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("os.replace", flaky)
+        monkeypatch.setattr(main.time, "sleep", lambda s: None)
+        with mock.patch("tkinter.messagebox.showerror") as err:
+            main.save_data({"notes": [{"title": "ok"}]})
+        assert err.call_count == 0
+        assert calls["n"] == 3
+        assert "ok" in (tmp_path / "brain.json").read_text(encoding="utf-8")

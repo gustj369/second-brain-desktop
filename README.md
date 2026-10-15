@@ -30,10 +30,16 @@ second-brain-desktop/
 ├── requirements-dev.txt # 개발 의존성 (pytest)
 ├── tests/
 │   └── test_data.py     # 단위 테스트
-├── brain.json           # 노트 데이터 (자동 생성, git 제외)
 ├── brain.log            # 에러 로그 (자동 생성, git 제외)
-└── config.json          # API 키 (자동 생성, git 제외)
+└── config.json          # API 키·설정 (자동 생성, git 제외 — 클라우드 동기화 안 함)
+
+문서\SecondBrain\        # 노트 데이터 폴더 (기본값, Windows에선 OneDrive\문서로 자동 백업)
+├── brain.json           # 노트 데이터
+└── backups\             # 하루 1회 자동 백업(최근 30일) + 💾 수동 백업
 ```
+
+노트 저장 위치는 `config.json`의 `data_dir`로 바꿀 수 있습니다.
+이전 버전처럼 앱 폴더에 `brain.json`이 있으면 처음 실행할 때 데이터 폴더로 옮기고, 원본은 `brain.json.migrated`로 남깁니다.
 
 ## 🗺 로드맵
 

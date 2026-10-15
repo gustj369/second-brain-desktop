@@ -6,10 +6,15 @@ from typing import Optional, Callable
 from datetime import datetime, date, timedelta
 from collections import Counter, defaultdict
 
-DATA_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.json")
-CONFIG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+APP_DIR      = os.path.dirname(os.path.abspath(__file__))
+# API 키가 든 config.json은 클라우드 동기화 폴더로 보내지 않도록 앱 폴더에 둔다
+CONFIG_FILE  = os.path.join(APP_DIR, "config.json")
+# 이전 버전의 노트 위치(앱 폴더) — 시작 시 init_data_location()이 데이터 폴더로 옮기고 DATA_FILE을 교체
+LEGACY_DATA_FILE = os.path.join(APP_DIR, "brain.json")
+DATA_FILE    = LEGACY_DATA_FILE
+BACKUP_KEEP_DAYS = 30   # 자동 백업(하루 1개) 보관 개수
 GEMINI_MODEL = "gemini-2.5-flash"
-LOG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain.log")
+LOG_FILE     = os.path.join(APP_DIR, "brain.log")
 _log_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")
 _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(funcName)s: %(message)s"))
 logging.getLogger().addHandler(_log_handler)
@@ -76,7 +81,15 @@ def save_data(data: dict) -> None:
         tmp = DATA_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)
+        # OneDrive 등 동기화 프로그램이 파일을 잠깐 잡고 있으면 PermissionError — 짧게 재시도
+        for attempt in range(5):
+            try:
+                os.replace(tmp, DATA_FILE)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.2)
     except Exception as e:
         logging.error(e, exc_info=True)
         import tkinter.messagebox as _mb
@@ -98,6 +111,69 @@ def save_config(config: dict) -> None:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.error(e, exc_info=True)
+
+# ── 데이터 위치 & 자동 백업 ──────────────────────────────
+def _documents_dir() -> str:
+    """사용자 '문서' 폴더. Windows에서는 OneDrive로 리디렉션된 실제 경로를 반환한다."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            # CSIDL_PERSONAL(5) = 문서 — OneDrive 폴더 백업이 켜져 있으면 OneDrive\문서
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
+                return buf.value
+        except Exception as e:
+            logging.error(e, exc_info=True)
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
+def default_data_dir() -> str:
+    return os.path.join(_documents_dir(), "SecondBrain")
+
+def init_data_location(config: dict) -> str:
+    """노트 저장 폴더를 정하고 DATA_FILE을 그 안의 brain.json으로 바꾼다.
+
+    config["data_dir"]가 있으면 그 폴더, 없으면 문서\\SecondBrain (OneDrive 동기화 대상).
+    앱 폴더에 남은 이전 버전 brain.json은 새 위치에 데이터가 없을 때만 복사하고,
+    원본은 지우지 않고 brain.json.migrated로 이름만 바꿔 남긴다.
+    """
+    global DATA_FILE
+    data_dir = config.get("data_dir") or default_data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+    new_file = os.path.join(data_dir, "brain.json")
+    if (os.path.abspath(new_file) != os.path.abspath(LEGACY_DATA_FILE)
+            and os.path.exists(LEGACY_DATA_FILE) and not os.path.exists(new_file)):
+        shutil.copy2(LEGACY_DATA_FILE, new_file)
+        os.replace(LEGACY_DATA_FILE, LEGACY_DATA_FILE + ".migrated")
+    DATA_FILE = new_file
+    if config.get("data_dir") != data_dir:
+        config["data_dir"] = data_dir   # 사용자가 config.json에서 위치를 확인·변경할 수 있도록 기록
+        save_config(config)
+    return data_dir
+
+def backup_dir() -> str:
+    return os.path.join(os.path.dirname(DATA_FILE), "backups")
+
+def auto_backup(today: Optional[date] = None) -> Optional[str]:
+    """하루 1회 자동 백업 — 오늘 날짜 백업이 없을 때만 만들고, 최근 BACKUP_KEEP_DAYS개만 남긴다.
+
+    수동 백업(brain_backup_*.json)은 정리 대상이 아니다. 실패해도 앱 실행은 계속한다.
+    """
+    if not os.path.exists(DATA_FILE):
+        return None
+    try:
+        folder = backup_dir()
+        os.makedirs(folder, exist_ok=True)
+        today = today or date.today()
+        path = os.path.join(folder, f"brain_{today:%Y%m%d}.json")
+        if not os.path.exists(path):
+            shutil.copy2(DATA_FILE, path)
+        daily = sorted(f for f in os.listdir(folder) if re.fullmatch(r"brain_\d{8}\.json", f))
+        for old in daily[:-BACKUP_KEEP_DAYS]:
+            os.remove(os.path.join(folder, old))
+        return path
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        return None
 
 def fetch_url_summary(url: str) -> tuple[str, str, Optional[str]]:
     try:
@@ -834,7 +910,9 @@ class BrainApp(tk.Tk):
         self.configure(bg=BG)
 
         config = load_config()
+        init_data_location(config)   # DATA_FILE을 데이터 폴더(기본: 문서\SecondBrain)로 설정
         self.data = load_data()
+        auto_backup()
         self.selected_id = None
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh_list())
@@ -1677,8 +1755,9 @@ class BrainApp(tk.Tk):
         if not os.path.exists(DATA_FILE):
             messagebox.showinfo("알림", "백업할 데이터가 없습니다."); return
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = os.path.join(os.path.dirname(DATA_FILE), f"brain_backup_{date_str}.json")
+        backup_path = os.path.join(backup_dir(), f"brain_backup_{date_str}.json")
         try:
+            os.makedirs(backup_dir(), exist_ok=True)
             shutil.copy2(DATA_FILE, backup_path)
             messagebox.showinfo("백업 완료", f"저장됨:\n{backup_path}")
         except Exception as e:
