@@ -562,3 +562,44 @@ class TestUnsavedChangesGui:
             gui_app.delete_note()
         ask.assert_not_called()
         assert gui_app.data["notes"] == []
+
+
+class TestSimilarCandidates:
+    def _note(self, nid, tags, updated):
+        return {"id": nid, "title": nid, "tags": tags, "updated_at": updated}
+
+    def test_recent_notes_not_dropped(self):
+        """저장 순서(오래된 순)로 앞 30개만 보내 최근 노트가 빠지던 문제 회귀."""
+        notes = [self._note(f"n{i:03d}", [], f"2026-01-01T00:00:{i % 60:02d}".replace(
+            "00:00:", f"{i // 60:02d}:00:")) for i in range(40)]
+        picked = main._similar_candidates(notes, None, [], 30)
+        assert len(picked) == 30
+        assert picked[0]["id"] == "n039"                 # 가장 최근
+        assert "n000" not in [n["id"] for n in picked]   # 가장 오래된 것부터 제외
+
+    def test_shared_tags_ranked_first_and_current_excluded(self):
+        notes = [
+            self._note("cur", ["ai"], "2026-05-01"),
+            self._note("recent-no-tag", ["요리"], "2026-09-01"),
+            self._note("old-shared", ["ai", "글쓰기"], "2026-01-01"),
+        ]
+        picked = main._similar_candidates(notes, "cur", ["ai", "글쓰기"], 30)
+        assert [n["id"] for n in picked] == ["old-shared", "recent-no-tag"]
+
+
+class TestListWheelGui:
+    def test_wheel_over_note_card_scrolls_list(self, gui_app):
+        """노트 카드 위에서 휠을 굴려도 목록이 스크롤되어야 한다 (이전엔 캔버스에만 바인딩)."""
+        gui_app.new_note(confirm=False)
+        gui_app.title_var.set("휠 테스트")
+        assert gui_app.save_note()
+        card_label = gui_app.scroll_inner.winfo_children()[0].winfo_children()[1].winfo_children()[0]
+        assert isinstance(card_label, __import__("tkinter").Label)
+        # 숨긴(withdrawn) 창에는 휠 이벤트가 전달되지 않으므로 잠깐 표시
+        gui_app.deiconify(); gui_app.update()
+        try:
+            with mock.patch.object(gui_app.canvas, "yview_scroll") as scroll:
+                card_label.event_generate("<MouseWheel>", delta=-120, when="now")
+        finally:
+            gui_app.withdraw()
+        scroll.assert_called_once_with(1, "units")

@@ -213,6 +213,17 @@ def _fetch_youtube_transcript(vid: str) -> str:
         fetched = next(iter(transcript_list)).fetch()
     return " ".join(s["text"] for s in fetched.to_raw_data())[:5000]
 
+def _similar_candidates(notes: list, exclude_id: Optional[str],
+                        current_tags: list, limit: int) -> list:
+    """'비슷한 노트 찾기'에 보낼 후보 — 현재 노트와 겹치는 태그 수, 같으면 최근 수정 순.
+
+    저장 순서(가장 오래된 노트부터)로 앞에서 자르면 최근 노트가 후보에서 빠지므로 정렬 후 자른다.
+    """
+    tags = set(current_tags)
+    others = [n for n in notes if n["id"] != exclude_id]
+    others.sort(key=lambda n: (len(tags & set(n["tags"])), n["updated_at"]), reverse=True)
+    return others[:limit]
+
 def _run_ai_async(
     parent: tk.Misc,
     system_instruction: str,
@@ -1410,8 +1421,12 @@ class BrainApp(tk.Tk):
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        self.canvas.bind("<MouseWheel>",
-            lambda e: self.canvas.yview_scroll(-1*(e.delta//120), "units"))
+        # 휠 이벤트는 마우스 아래 위젯에만 전달되므로 캔버스뿐 아니라 목록·카드 위젯에도 연결
+        self.canvas.bind("<MouseWheel>", self._on_list_wheel)
+        self.scroll_inner.bind("<MouseWheel>", self._on_list_wheel)
+
+    def _on_list_wheel(self, event):
+        self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     def _build_right(self, parent):
         self.right_parent = parent
@@ -1696,12 +1711,14 @@ class BrainApp(tk.Tk):
         self._ai_set_loading(self.similar_btn, "분석 중...")
 
         # 데이터 준비는 메인 스레드에서 (스레드 안전)
-        other_notes = [n for n in self.data["notes"] if n["id"] != self.selected_id]
+        current_tags = [t.strip() for t in self.tags_var.get().split(",") if t.strip()]
+        other_notes = _similar_candidates(
+            self.data["notes"], self.selected_id, current_tags, COLLISION_CONTEXT_LIMIT)
         notes_block = "\n\n".join(
             f"[ID:{n['id'][:8]}] {n['title']}\n"
             f"태그: {', '.join(n['tags'])}\n"
             f"내용: {n['content'][:200]}"
-            for n in other_notes[:COLLISION_CONTEXT_LIMIT]
+            for n in other_notes
         )
         current_note = f"제목: {title}\n내용: {content[:500]}"
 
@@ -1880,6 +1897,7 @@ class BrainApp(tk.Tk):
             w.bind("<Button-1>", lambda e, nid=note["id"]: self.select_note(nid))
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
+            w.bind("<MouseWheel>", self._on_list_wheel)
 
     # ── 저장하지 않은 변경 감지 ───────────────────────
     def _editor_state(self) -> tuple:
