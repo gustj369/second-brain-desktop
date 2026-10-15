@@ -33,6 +33,8 @@ BORDER   = "#3c3c3c"
 SEL      = "#094771"
 
 TOAST_TIMEOUT_MS      = 8000
+SEARCH_DEBOUNCE_MS    = 200   # 검색어 입력이 멈춘 뒤 목록 갱신까지 대기
+LIST_PAGE_SIZE        = 200   # 노트 목록 한 번에 그리는 카드 수 ('더 보기'로 추가)
 CLIPBOARD_MIN_LEN     = 50
 ASK_BRAIN_MAX_NOTES   = 200   # _ask_brain(): AI에 전달할 최대 노트 수
 COLLISION_CONTEXT_LIMIT = 30  # _find_similar(): 유사 노트 탐색 시 컨텍스트 노트 수
@@ -941,7 +943,9 @@ class BrainApp(tk.Tk):
         auto_backup()
         self.selected_id = None
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self.refresh_list())
+        self.search_var.trace_add("write", lambda *_: self._schedule_search_refresh())
+        self._search_after_id = None
+        self._list_limit = LIST_PAGE_SIZE   # 노트 목록에 그릴 카드 수 ('더 보기'로 증가)
         self.note_type = tk.StringVar(value="note")
         self.api_client = None
         self.clipboard_enabled = tk.BooleanVar(value=config.get("clipboard_enabled", True))
@@ -1839,6 +1843,17 @@ class BrainApp(tk.Tk):
             lbl.bind("<Enter>", lambda e, l=lbl: l.configure(fg="#81d4fa"))
             lbl.bind("<Leave>", lambda e, l=lbl: l.configure(fg=ACCENT))
 
+    def _schedule_search_refresh(self):
+        """검색어 입력이 멈춘 뒤 한 번만 목록 갱신 — 글자마다 전체 목록을 다시 그리지 않도록."""
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+        self._search_after_id = self.after(SEARCH_DEBOUNCE_MS, self._run_search_refresh)
+
+    def _run_search_refresh(self):
+        self._search_after_id = None
+        self._list_limit = LIST_PAGE_SIZE   # 검색어가 바뀌면 처음 페이지부터
+        self.refresh_list()
+
     def _filter_by_tag(self, tag):
         self.search_var.set(tag)
 
@@ -1853,22 +1868,48 @@ class BrainApp(tk.Tk):
                      keyword in n["title"].lower() or
                      keyword in n["content"].lower() or
                      any(keyword in t.lower() for t in n["tags"])]
-        notes = sorted(notes, key=lambda n: n["updated_at"], reverse=True)
-        for note in notes:
-            self._note_card(note)
+        self._list_notes = sorted(notes, key=lambda n: n["updated_at"], reverse=True)
+        self._cards = {}
+        self._rendered = 0
+        self._more_btn = None
+        # 카드 위젯 생성이 노트 수에 비례해 느려지므로 펼친 개수(_list_limit)까지만 그린다
+        self._render_more_cards(self._list_limit)
         self._update_stats()
         self._refresh_tag_cloud()
+
+    def _render_more_cards(self, count):
+        """목록 끝에 카드를 count개 덧붙이고, 남은 노트가 있으면 '더 보기' 버튼을 둔다."""
+        if self._more_btn is not None:
+            self._more_btn.destroy()
+            self._more_btn = None
+        end = min(self._rendered + count, len(self._list_notes))
+        for note in self._list_notes[self._rendered:end]:
+            self._note_card(note)
+        self._rendered = end
+        remaining = len(self._list_notes) - end
+        if remaining > 0:
+            self._more_btn = tk.Button(
+                self.scroll_inner, text=f"더 보기  ({remaining}개 남음)",
+                bg=BG3, fg=ACCENT, font=("Segoe UI", 9), relief="flat",
+                cursor="hand2", command=self._show_more_notes)
+            self._more_btn.pack(fill="x", padx=12, pady=8, ipady=4)
+            self._more_btn.bind("<MouseWheel>", self._on_list_wheel)
+
+    def _show_more_notes(self):
+        self._list_limit += LIST_PAGE_SIZE
+        self._render_more_cards(LIST_PAGE_SIZE)
 
     def _note_card(self, note):
         is_sel = note["id"] == self.selected_id
         bg = SEL if is_sel else BG2
-        hover_bg = "#1a3a5c" if not is_sel else SEL
+        hover_bg = "#1a3a5c"
 
         card = tk.Frame(self.scroll_inner, bg=bg, cursor="hand2")
         card.pack(fill="x")
         tk.Frame(card, bg=BORDER, height=1).pack(fill="x")
         inner = tk.Frame(card, bg=bg, padx=14, pady=10)
         inner.pack(fill="x")
+        self._cards[note["id"]] = (card, inner)
 
         days = self._days_since_review(note)
         review_icon = "🔁 " if days >= 7 else ""
@@ -1898,6 +1939,23 @@ class BrainApp(tk.Tk):
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
             w.bind("<MouseWheel>", self._on_list_wheel)
+
+    def _paint_card(self, note_id, bg):
+        """카드 하나의 배경색만 변경 — 선택 변경 시 목록 전체를 다시 그리지 않기 위함."""
+        widgets = getattr(self, "_cards", {}).get(note_id)
+        if not widgets or not widgets[0].winfo_exists():
+            return
+        card, inner = widgets
+        for w in [card, inner] + inner.winfo_children():
+            w.configure(bg=bg)
+
+    def _set_selected(self, note_id):
+        prev = self.selected_id
+        self.selected_id = note_id
+        if prev and prev != note_id:
+            self._paint_card(prev, BG2)
+        if note_id:
+            self._paint_card(note_id, SEL)
 
     # ── 저장하지 않은 변경 감지 ───────────────────────
     def _editor_state(self) -> tuple:
@@ -1934,7 +1992,7 @@ class BrainApp(tk.Tk):
         """빈 편집기로 전환. confirm=True면 저장 안 한 변경을 먼저 확인하고, 취소 시 False."""
         if confirm and not self._confirm_leave_editor():
             return False
-        self.selected_id = None
+        self._set_selected(None)   # 이전 선택 카드의 강조도 해제
         self.note_type.set("note")
         self._toggle_link_row()
         self.url_var.set("")
@@ -1954,7 +2012,7 @@ class BrainApp(tk.Tk):
             return
         if not self._confirm_leave_editor():
             return
-        self.selected_id = note_id
+        self._set_selected(note_id)
         self.note_type.set(note.get("type", "note"))
         self._toggle_link_row()
         self.url_var.set(note.get("url", ""))
@@ -1976,7 +2034,7 @@ class BrainApp(tk.Tk):
 
         self.status_label.configure(text=f"수정됨: {note['updated_at'][:16]}")
         self._mark_clean()
-        self.refresh_list()
+        # 목록 내용은 그대로이므로 전체를 다시 그리지 않음 (선택 강조는 _set_selected가 처리)
 
     def save_note(self):
         title   = self.title_var.get().strip()

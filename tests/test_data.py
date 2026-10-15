@@ -511,7 +511,14 @@ def gui_app(_gui_app_shared, monkeypatch):
     # 공유 앱의 DATA_FILE이 다른 테스트의 monkeypatch에 영향받지 않도록 테스트마다 고정
     monkeypatch.setattr(main, "DATA_FILE", str(tmp / "docs" / "SecondBrain" / "brain.json"))
     app.data = {"notes": []}
+    # 공유 앱이라 이전 테스트의 검색어·예약된 검색·펼친 개수를 초기화
+    app.search_var.set("")
+    if app._search_after_id is not None:
+        app.after_cancel(app._search_after_id)
+        app._search_after_id = None
+    app._list_limit = main.LIST_PAGE_SIZE
     app.new_note(confirm=False)
+    app.refresh_list()
     return app
 
 
@@ -603,3 +610,51 @@ class TestListWheelGui:
         finally:
             gui_app.withdraw()
         scroll.assert_called_once_with(1, "units")
+
+
+class TestListPagingGui:
+    def _fill(self, app, count):
+        app.data = {"notes": [main._normalize_note({
+            "id": f"id-{i:04d}", "title": f"노트 {i}", "content": "내용", "tags": [],
+            "updated_at": f"2026-01-01T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}"})
+            for i in range(count)]}
+        app._list_limit = main.LIST_PAGE_SIZE
+        app.refresh_list()
+
+    def test_renders_first_page_then_more(self, gui_app):
+        self._fill(gui_app, 450)
+        assert len(gui_app._cards) == 200
+        assert "id-0449" in gui_app._cards                      # 가장 최근 노트부터
+        assert "250개 남음" in gui_app._more_btn.cget("text")
+        gui_app._show_more_notes()
+        assert len(gui_app._cards) == 400
+        gui_app._show_more_notes()
+        assert len(gui_app._cards) == 450 and gui_app._more_btn is None
+
+    def test_search_covers_all_notes_and_resets_page(self, gui_app):
+        self._fill(gui_app, 450)
+        gui_app._show_more_notes()
+        gui_app.search_var.set("노트 3")
+        gui_app._run_search_refresh()                           # 디바운스 없이 즉시 실행
+        assert gui_app._list_limit == main.LIST_PAGE_SIZE
+        assert "id-0003" in gui_app._cards                      # 오래된(목록 뒤쪽) 노트도 검색됨
+
+    def test_save_keeps_expanded_page(self, gui_app):
+        self._fill(gui_app, 450)
+        gui_app._show_more_notes()
+        gui_app.new_note(confirm=False)
+        gui_app.title_var.set("새 노트")
+        assert gui_app.save_note()
+        assert len(gui_app._cards) == 400
+
+
+class TestSelectionRepaintGui:
+    def test_select_repaints_without_rebuilding_list(self, gui_app):
+        gui_app.data = {"notes": [main._normalize_note({"id": f"n{i}", "title": f"t{i}"}) for i in range(3)]}
+        gui_app.refresh_list()
+        with mock.patch.object(gui_app, "refresh_list") as rebuild:
+            gui_app.select_note("n1")
+            gui_app.select_note("n2")
+        rebuild.assert_not_called()
+        assert gui_app._cards["n2"][0].cget("bg") == main.SEL
+        assert gui_app._cards["n1"][0].cget("bg") == main.BG2
